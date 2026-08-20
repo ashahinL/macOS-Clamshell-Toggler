@@ -3,7 +3,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Platform: macOS](https://img.shields.io/badge/Platform-macOS%2011%2B-brightgreen.svg)
 ![Architecture: Apple Silicon](https://img.shields.io/badge/Arch-Apple%20Silicon-orange.svg)
-![Version: 1.0.0](https://img.shields.io/badge/Version-1.0.0-purple.svg)
+![Version: 1.1.0](https://img.shields.io/badge/Version-1.1.0-purple.svg)
 
 Use your Mac with the lid closed **on battery power** — no charger required.
 
@@ -39,6 +39,8 @@ to sleep, and a warning triangle if the watcher has stopped.
 - **Safe by default** — the override only applies while an external display is connected
 - **Menu bar app** — see the current state and switch modes in one click
 - **No password after install** — mode switching writes a file in your home directory
+- **Screen off, machine on** — the built-in panel sleeps behind a closed lid
+  instead of staying lit, while wifi, audio and running jobs carry on
 - **Fails safe** — if anything is unreadable or unexpected, normal sleep wins
 - **Survives reboots** — runs as a `launchd` system daemon
 - **Tiny** — a shell script and a ~250-line menu bar app; no background frameworks
@@ -65,6 +67,34 @@ urgency. The chosen mode is re-read **every second** — a mode switch is a
 deliberate act and you may close the lid straight afterwards, so a stale flag
 would look like the switch had failed. Displays are re-probed **every five
 seconds**, since that probe costs ~23 ms and nothing races it.
+
+### Turning the built-in screen off
+
+Blocking the sleep leaves one thing behind: macOS never tells the built-in
+display to go dark. Measured on an M4 Air in `on` mode, backlight current sat at
+a steady 3640 µA for a full minute with the lid shut — heat and battery spent
+lighting the inside of a closed laptop.
+
+So once the lid has been shut for a couple of polls with **no external display
+attached**, the daemon calls `pmset displaysleepnow`. That sleeps the display
+alone; wifi, audio, downloads and any running job carry on. Opening the lid
+wakes it as usual.
+
+It is deliberately narrow. The screen is only ever put to sleep when all of
+these hold, and the moment any stops holding the daemon backs off:
+
+- the Mac is being held awake by clamshell in the first place
+- **zero** external displays — `displaysleepnow` would take a monitor down with
+  it, and that is the one screen you are actually looking at
+- the lid has read closed on consecutive polls, so no single bad sample can
+  blank a screen you are using
+
+In practice that means it fires only in `on` mode with no monitor — the headless
+case. With a monitor attached macOS already handles the internal panel, and in
+`auto` mode with no monitor the machine simply sleeps.
+
+Turn it off with `clamshell blank off` if you need the panel lit behind a closed
+lid.
 
 ### Detecting an external display
 
@@ -120,6 +150,7 @@ clamshell            # status
 clamshell auto       # awake with lid closed, only while a display is attached
 clamshell on         # awake with lid closed, display or not
 clamshell off        # normal macOS behaviour
+clamshell blank off  # keep the built-in screen lit behind a closed lid
 clamshell log        # recent state changes
 clamshell json       # machine-readable status
 ```
@@ -133,6 +164,7 @@ clamshell 1.0.0
   lid                 closed
   power               Battery Power
   sleep disabled      1
+  blank when closed   on
   watcher             running (pid 6108)
   mode file           /Users/you/.config/clamshell/mode
 
@@ -144,11 +176,13 @@ clamshell 1.0.0
 | Mode | Display attached | No display | Use it for |
 |---|---|---|---|
 | `auto` *(default)* | stays awake | **sleeps** | Everyday desk use |
-| `on` | stays awake | stays awake | Headless jobs — a long build or download with the lid shut |
+| `on` | stays awake | stays awake, screen off | Headless jobs — a long build or download with the lid shut |
 | `off` | sleeps | sleeps | Temporarily restoring stock behaviour |
 
-> **`on` keeps the Mac awake with no display attached.** In a closed bag that means
-> battery drain and heat. Switch back to `auto` when you are done.
+> **`on` keeps the Mac awake with no display attached.** The built-in screen is
+> put to sleep once the lid has been shut for a few seconds, so it is not also
+> burning backlight — but the machine itself is still running. In a closed bag
+> that is battery drain and heat. Switch back to `auto` when you are done.
 
 Switching modes never requires a password: the mode lives in
 `~/.config/clamshell/mode`, and the root watcher reads it.
@@ -194,6 +228,16 @@ fail-safe  (unknown state must never keep the Mac awake)
 daemon environment  (launchd supplies PATH and nothing else)
 
   ok   starts with no HOME in the environment
+
+blanking the built-in screen  (a black screen nobody asked for is the worst outcome)
+
+  ok   on + lid shut + no monitor  → screen off
+  ok   stays off, re-armed not spammed
+  ok   one closed sample alone     → left alone
+  ok   monitor attached            → left alone
+  ok   mac not held awake          → left alone
+  ok   lid open                    → left alone
+  ok   blanking turned off         → left alone
 ```
 
 ## Troubleshooting
@@ -204,6 +248,12 @@ the flag afterwards does not retroactively trigger that decision, and nothing
 re-evaluates until the next lid event. Open and close the lid and it sleeps.
 Forcing it would mean calling `pmset sleepnow` behind your back, which is a
 worse surprise than the wait.
+
+**The screen stays lit behind a closed lid.** Blanking only applies with no
+external display attached, since `pmset displaysleepnow` would take a monitor
+down with it. Check `clamshell blank` reads `on`, and `clamshell log` for a
+`display asleep` line. With a monitor attached, macOS handles the internal panel
+itself.
 
 **A mode switch takes a moment to take effect.** About a second. The watcher
 re-reads the mode file every second and re-probes displays every five, so

@@ -12,11 +12,16 @@
 
 set -uo pipefail
 
-readonly VERSION='1.0.0'
+readonly VERSION='1.1.0'
 readonly LABEL='local.clamshell'
-readonly LOG_FILE='/var/log/clamshell.log'
+# Overridable so the tests can exercise the code paths that log. Note that a
+# redirection bash cannot open makes it skip the command entirely, so an
+# unwritable log would silently stop pmset from being called at all.
+readonly LOG_FILE="${CLAMSHELL_LOG_FILE:-/var/log/clamshell.log}"
 readonly MODE_POLL=1        # how often the chosen mode is re-read
 readonly DISPLAY_POLL=5     # how often displays are re-probed
+readonly BLANK_REARM=60     # how often display sleep is re-asserted
+readonly LID_CONFIRM=2      # polls the lid must read closed before blanking
 
 # ------------------------------------------------------------------ output ---
 
@@ -49,6 +54,15 @@ else
 	MODE_FILE=''   # daemon context: --watch overrides this from argv
 fi
 
+# The blanking preference lives beside the mode file. This has to be a function
+# rather than a variable: --watch reassigns MODE_FILE from argv *after* this
+# block has already run, so anything computed here would point at the wrong
+# directory inside the daemon.
+blank_file() {
+	[[ -n "$MODE_FILE" ]] || return 1
+	printf '%s/blank' "$(dirname "$MODE_FILE")"
+}
+
 # ------------------------------------------------------------------ probes ---
 
 # Count attached external displays.
@@ -78,6 +92,18 @@ sleep_disabled() {
 
 watcher_pid() {
 	pgrep -f "clamshell --watch" 2>/dev/null | head -1
+}
+
+# Backlight current for the built-in panel, in microamps.
+#
+# The same AppleARMBacklight node the brightness slider drives. This is what
+# proved the panel stays lit behind a closed lid: a steady 3640uA across a full
+# minute with the lid shut. Reporting only — the blanking logic triggers off the
+# lid, not off this, so a registry change here costs a status line, not the
+# behaviour.
+backlight_ua() {
+	ioreg -c AppleARMBacklight -r -d1 -w0 2>/dev/null |
+		sed -n 's/.*"BrightnessMicroAmps"={[^}]*"value"=\([0-9]*\).*/\1/p'
 }
 
 # -------------------------------------------------------------------- mode ---
@@ -113,19 +139,44 @@ write_mode() {
 	fi
 }
 
-# Resolve the mode to the SleepDisabled value it wants.
+read_blank() {
+	local f b=''
+	f="$(blank_file)" || { printf 'on'; return; }
+	[[ -r "$f" ]] && b=$(tr -d '[:space:]' < "$f" 2>/dev/null)
+	case "$b" in
+		off) printf 'off' ;;
+		*)   printf 'on'  ;;   # default on: nobody can see a closed panel
+	esac
+}
+
+write_blank() {
+	local v="$1" f dir
+	f="$(blank_file)" || die "cannot resolve the config directory"
+	dir="$(dirname "$f")"
+	mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
+	printf '%s\n' "$v" > "$f" 2>/dev/null || die "cannot write $f"
+
+	printf '%sblank when closed → %s%s%s\n' "$C_DIM" "$C_BOLD" "$v" "$C_RESET"
+	case "$v" in
+		on)  printf 'The built-in screen sleeps once the lid is shut with no display attached.\n' ;;
+		off) printf 'The built-in screen stays lit behind a closed lid.\n' ;;
+	esac
+}
+
+# Resolve the mode to the SleepDisabled value it wants, given a display count.
 # `auto` fails safe: anything unexpected means "let the machine sleep".
-want_value() {
+want_for_displays() {
+	local n="$1"
 	case "$(read_mode)" in
 		on)  printf 1 ;;
 		off) printf 0 ;;
 		*)
-			local n
-			n=$(external_displays)
 			if [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )); then printf 1; else printf 0; fi
 			;;
 	esac
 }
+
+want_value() { want_for_displays "$(external_displays)"; }
 
 # ----------------------------------------------------------------- commands ---
 
@@ -133,6 +184,54 @@ want_value() {
 mode_stamp() {
 	[[ -n "$MODE_FILE" ]] || return 0
 	stat -f '%m %z' "$MODE_FILE" 2>/dev/null
+}
+
+# Blanking state, carried across polls by cmd_watch.
+BLANK_STREAK=0   # consecutive polls the lid has read closed
+BLANK_LAST=0     # epoch seconds of the last display-sleep call
+
+# Sleep the built-in panel when nothing can possibly be looking at it.
+#
+# With `disablesleep` set, macOS blocks the sleep the lid would normally cause
+# but never tells the display to go dark. Measured on an M4 Air: a steady 3640uA
+# of backlight current for a full minute with the lid shut — heat and battery
+# spent lighting the inside of a closed laptop. `pmset displaysleepnow` drops
+# the panel without touching the rest of the machine, so wifi, audio and any
+# running job carry on untouched.
+#
+# Guarded hard, because a black screen the user cannot explain is a far worse
+# failure than a lit one:
+#   - only while we are the reason this Mac is awake
+#   - only with zero external displays, since displaysleepnow would take a
+#     monitor down with it, and that is the one screen being watched
+#   - only once the lid has read closed on consecutive polls, so no single bad
+#     sample can blank a screen someone is using
+#   - the streak resets the moment any of that stops holding
+maybe_sleep_display() {
+	local want="$1" displays="$2" now
+
+	if [[ "$(read_blank)" != 'on' ]] ||
+	   [[ "$want" != 1 ]] || [[ "$displays" != 0 ]] || ! lid_is_closed; then
+		BLANK_STREAK=0
+		BLANK_LAST=0
+		return
+	fi
+
+	BLANK_STREAK=$(( BLANK_STREAK + 1 ))
+	(( BLANK_STREAK >= LID_CONFIRM )) || return
+
+	# Re-assert slowly. Something else may wake the panel while the lid is still
+	# shut, and re-arming costs one pmset call a minute.
+	now=$(date +%s)
+	(( now - BLANK_LAST >= BLANK_REARM )) || return
+
+	if pmset displaysleepnow 2>>"$LOG_FILE"; then
+		if (( BLANK_LAST == 0 )); then
+			printf '%s display asleep (lid closed, no external display)\n' \
+				"$(date '+%Y-%m-%d %H:%M:%S')" >> "$LOG_FILE"
+		fi
+		BLANK_LAST=$now
+	fi
 }
 
 cmd_watch() {
@@ -147,7 +246,7 @@ cmd_watch() {
 	#
 	# Display changes are not raced against anything in the same way, and
 	# probing costs ~23ms of ioreg, so that stays on the slower cadence.
-	local prev='' want stamp='' new_stamp countdown=0
+	local prev='' want stamp='' new_stamp countdown=0 displays
 
 	while :; do
 		new_stamp="$(mode_stamp)"
@@ -156,15 +255,21 @@ cmd_watch() {
 			stamp="$new_stamp"
 			countdown=$DISPLAY_POLL
 
-			want=$(want_value)
+			# Probed once and passed down, so adding the blanking check costs
+			# one extra ioreg per poll rather than three.
+			displays=$(external_displays)
+			want=$(want_for_displays "$displays")
+
 			if [[ "$want" != "$prev" ]]; then
 				if pmset -b disablesleep "$want" 2>>"$LOG_FILE"; then
 					printf '%s mode=%s displays=%s disablesleep=%s\n' \
 						"$(date '+%Y-%m-%d %H:%M:%S')" "$(read_mode)" \
-						"$(external_displays)" "$want" >> "$LOG_FILE"
+						"$displays" "$want" >> "$LOG_FILE"
 					prev="$want"
 				fi
 			fi
+
+			maybe_sleep_display "$want" "$displays"
 		fi
 
 		sleep "$MODE_POLL"
@@ -187,6 +292,7 @@ cmd_status() {
 	printf '  lid                 %s\n' "$lid"
 	printf '  power               %s\n' "$(power_source)"
 	printf '  sleep disabled      %s\n' "${awake:-unknown}"
+	printf '  blank when closed   %s\n' "$(read_blank)"
 	if [[ -n "$pid" ]]; then
 		printf '  watcher             %srunning%s (pid %s)\n' "$C_GREEN" "$C_RESET" "$pid"
 	else
@@ -203,16 +309,23 @@ cmd_status() {
 
 # Machine-readable status, for the menu bar app and for scripting.
 cmd_json() {
-	local pid awake
+	local pid awake ua
 	local lid_closed=false on_battery=false sleep_off=false watching=false
+	local blank=false
 
 	pid=$(watcher_pid)
 	awake=$(sleep_disabled)
+
+	# -1 rather than null: the field stays a number for anything parsing it,
+	# and an unreadable backlight is reported rather than silently zeroed.
+	ua=$(backlight_ua)
+	[[ "$ua" =~ ^[0-9]+$ ]] || ua=-1
 
 	lid_is_closed && lid_closed=true
 	[[ "$(power_source)" == 'Battery Power' ]] && on_battery=true
 	[[ "$awake" == '1' ]] && sleep_off=true
 	[[ -n "$pid" ]] && watching=true
+	[[ "$(read_blank)" == 'on' ]] && blank=true
 
 	printf '{'
 	printf '"version":"%s",'      "$VERSION"
@@ -221,6 +334,8 @@ cmd_json() {
 	printf '"lidClosed":%s,'      "$lid_closed"
 	printf '"onBattery":%s,'      "$on_battery"
 	printf '"sleepDisabled":%s,'  "$sleep_off"
+	printf '"blankWhenClosed":%s,' "$blank"
+	printf '"backlightMicroAmps":%s,' "$ua"
 	printf '"watcherRunning":%s,' "$watching"
 	printf '"modeFile":"%s"'      "$MODE_FILE"
 	printf '}\n'
@@ -244,6 +359,9 @@ ${C_BOLD}COMMANDS${C_RESET}
                  external display is attached  ${C_DIM}(recommended)${C_RESET}
   on             Stay awake with the lid closed, display or not
   off            Normal macOS behaviour — closing the lid sleeps
+  blank [on|off] Sleep the built-in screen once the lid is shut with no
+                 display attached  ${C_DIM}(on by default; prints the current
+                 setting when given no argument)${C_RESET}
   log [n]        Show the last n state changes (default 20)
   help           Show this message
   version        Show the version
@@ -268,6 +386,13 @@ case "${1:-status}" in
 	status)          cmd_status ;;
 	json|--json)     cmd_json ;;
 	auto|on|off)     write_mode "$1" ;;
+	blank)
+		case "${2:-}" in
+			on|off) write_blank "$2" ;;
+			'')     printf '%s\n' "$(read_blank)" ;;
+			*)      die "blank takes on or off" ;;
+		esac
+		;;
 	log)             cmd_log "${2:-20}" ;;
 	help|-h|--help)  cmd_help ;;
 	version|--version) printf '%s\n' "$VERSION" ;;

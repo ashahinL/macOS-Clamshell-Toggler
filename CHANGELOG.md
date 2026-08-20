@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-08-20
+
+### Added
+- **The built-in screen now sleeps behind a closed lid.** Blocking the lid-close
+  sleep left the panel fully lit: measured at a steady 3640 uA of backlight
+  current across a full minute with the lid shut, on battery, in `on` mode. The
+  watcher now calls `pmset displaysleepnow` once the lid has read closed on
+  consecutive polls with no external display attached, which drops the display
+  without touching the rest of the machine — wifi, audio and running jobs carry
+  on. Guarded so it can only fire when nothing can be looking at a screen: the
+  Mac must be held awake by clamshell, there must be **zero** external displays,
+  and a single stray "closed" sample is not enough.
+- **`clamshell blank [on|off]`** to control that, defaulting to `on`. Stored
+  beside the mode file, so it needs no sudo either.
+- **`blankWhenClosed` and `backlightMicroAmps` in `clamshell json`**, and a
+  `blank when closed` line in `clamshell status`.
+
+### Changed
+- The watch loop probes displays once per poll and passes the count down, so
+  adding the blanking check costs one extra `ioreg` rather than three.
+- `CLAMSHELL_LOG_FILE` overrides the log path. A redirection bash cannot open
+  makes it skip the command entirely, so an unwritable log silently stopped
+  `pmset` being called at all — which is also what let the tests reach it.
+
+[1.1.0]: https://github.com/ashahinL/macos-clamshell/releases/tag/v1.1.0
+
 ## [1.0.0] - 2026-08-20
 
 ### Added
