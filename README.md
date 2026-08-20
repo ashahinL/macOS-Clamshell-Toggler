@@ -23,10 +23,15 @@ a bag still sleeps like it always did.
 │   Always Awake  Even with no display │
 │   Off           Normal macOS sleep   │
 │ ──────────────────────────────────── │
+│ ✓ Open at Login                      │
 │   Open Log                           │
 │   Quit                               │
 └──────────────────────────────────────┘
 ```
+
+The menu bar icon is a closed MacBook: **solid** when closing the lid will keep
+the Mac awake, **outlined** when it will sleep, and a warning triangle if the
+watcher has stopped.
 
 ## Features
 
@@ -93,7 +98,11 @@ effect. Then launch the menu bar app:
 open /Applications/Clamshell.app
 ```
 
-To have it start at login: **System Settings → General → Login Items → +**.
+Tick **Open at Login** in the menu to have it start automatically. That uses
+`SMAppService` on macOS 13+, so the entry appears under System Settings → Login
+Items; macOS may ask you to approve it there the first time. On older releases,
+or if registration is refused for a locally built app, it falls back to a
+LaunchAgent at `~/Library/LaunchAgents/local.clamshell.menubar.plist`.
 
 ## Usage
 

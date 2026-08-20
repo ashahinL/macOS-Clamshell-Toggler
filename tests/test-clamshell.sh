@@ -77,6 +77,19 @@ check 'missing mode file        → auto'  1 missing 1
 check 'garbage mode file        → auto'  0 garbage 0
 check 'ioreg failure + auto     → sleep' broken auto 0
 
+printf '\n\033[1mdaemon environment\033[0m  (launchd supplies PATH and nothing else)\n\n'
+
+# Regression: an unbound $HOME under `set -u` used to kill the watcher on
+# startup, which KeepAlive turned into a silent respawn loop.
+env_err="$(env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin bash "$CLAMSHELL" --want 2>&1 >/dev/null)"
+if [[ -z "$env_err" ]]; then
+	printf '  \033[32mok\033[0m   starts with no HOME in the environment\n'
+	pass=$((pass + 1))
+else
+	printf '  \033[31mFAIL\033[0m starts with no HOME: %s\n' "$env_err"
+	fail=$((fail + 1))
+fi
+
 printf '\n\033[1msyntax\033[0m\n\n'
 for f in "$REPO"/bin/clamshell "$REPO"/scripts/*.sh "$REPO"/tests/*.sh; do
 	if bash -n "$f" 2>/dev/null; then

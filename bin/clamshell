@@ -32,13 +32,20 @@ die() { printf '%sclamshell: %s%s\n' "$C_RED" "$*" "$C_RESET" >&2; exit 1; }
 
 # ------------------------------------------------------------------- config ---
 
-# The watcher runs as root, where $HOME is /var/root — so the installer bakes
-# the real user's path into the LaunchDaemon argv. Interactive use resolves it
-# from the environment instead.
+# Where the chosen mode lives.
+#
+# launchd starts the watcher with a bare environment — PATH and nothing else,
+# no HOME — and passes the real user's path as argv[2] instead. So resolving
+# this must never *require* HOME: under `set -u` an unbound $HOME kills the
+# daemon at startup, and KeepAlive turns that into a silent respawn loop.
 if [[ -n "${CLAMSHELL_MODE_FILE:-}" ]]; then
 	MODE_FILE="$CLAMSHELL_MODE_FILE"
+elif [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+	MODE_FILE="$XDG_CONFIG_HOME/clamshell/mode"
+elif [[ -n "${HOME:-}" ]]; then
+	MODE_FILE="$HOME/.config/clamshell/mode"
 else
-	MODE_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/clamshell/mode"
+	MODE_FILE=''   # daemon context: --watch overrides this from argv
 fi
 
 # ------------------------------------------------------------------ probes ---

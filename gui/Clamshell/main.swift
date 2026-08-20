@@ -10,6 +10,7 @@
 
 import AppKit
 import Foundation
+import ServiceManagement
 
 // MARK: - Talking to the CLI
 
@@ -33,11 +34,9 @@ enum CLI {
     }
 
     @discardableResult
-    static func run(_ arguments: [String]) -> String? {
-        guard isInstalled else { return nil }
-
+    static func run(_ executable: String, _ arguments: [String]) -> String? {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
+        process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
 
         let pipe = Pipe()
@@ -56,14 +55,174 @@ enum CLI {
     }
 
     static func status() -> Status? {
-        guard let output = run(["json"]),
+        guard isInstalled,
+              let output = run(path, ["json"]),
               let data = output.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(Status.self, from: data)
     }
 
     /// Switching modes only rewrites a file in the user's home — no sudo.
     static func setMode(_ mode: String) {
-        run([mode])
+        guard isInstalled else { return }
+        run(path, [mode])
+    }
+}
+
+// MARK: - Open at login
+
+/// `SMAppService` on macOS 13+, falling back to a plain LaunchAgent.
+///
+/// `SMAppService` is the right API — the entry shows up under System Settings →
+/// Login Items where people expect to manage it. But it can refuse for a
+/// locally built, ad-hoc signed app, and a login toggle that silently does
+/// nothing is worse than none at all. So when it throws we write a LaunchAgent
+/// instead: launchd scans `~/Library/LaunchAgents` at every login, needs no
+/// entitlements, and is one file the user can inspect or delete by hand.
+enum LoginItem {
+    static let label = "local.clamshell.menubar"
+
+    static var plistURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+    }
+
+    /// True once registered, including while macOS is still waiting for the
+    /// user to approve it in System Settings.
+    static var isEnabled: Bool {
+        if #available(macOS 13.0, *) {
+            switch SMAppService.mainApp.status {
+            case .enabled, .requiresApproval: return true
+            default: break
+            }
+        }
+        return FileManager.default.fileExists(atPath: plistURL.path)
+    }
+
+    /// Registered, but macOS wants the user to confirm it first.
+    static var needsApproval: Bool {
+        if #available(macOS 13.0, *) {
+            return SMAppService.mainApp.status == .requiresApproval
+        }
+        return false
+    }
+
+    @discardableResult
+    static func setEnabled(_ enabled: Bool) -> Bool {
+        if #available(macOS 13.0, *) {
+            do {
+                if enabled {
+                    try SMAppService.mainApp.register()
+                } else {
+                    try SMAppService.mainApp.unregister()
+                }
+                removeAgent()          // never leave both mechanisms armed
+                return true
+            } catch {
+                NSLog("clamshell: SMAppService failed (\(error)) — using LaunchAgent")
+            }
+        }
+        return enabled ? writeAgent() : removeAgent()
+    }
+
+    @discardableResult
+    private static func writeAgent() -> Bool {
+        let executable = Bundle.main.executableURL?.path
+            ?? "/Applications/Clamshell.app/Contents/MacOS/Clamshell"
+
+        let plist: [String: Any] = [
+            "Label": label,
+            "ProgramArguments": [executable],
+            "RunAtLoad": true,
+            "ProcessType": "Interactive",
+        ]
+
+        do {
+            try FileManager.default.createDirectory(
+                at: plistURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try PropertyListSerialization.data(
+                fromPropertyList: plist, format: .xml, options: 0
+            )
+            try data.write(to: plistURL, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    @discardableResult
+    private static func removeAgent() -> Bool {
+        guard FileManager.default.fileExists(atPath: plistURL.path) else { return true }
+        // Unload it too, in case launchd already picked it up this session.
+        CLI.run("/bin/launchctl", ["bootout", "gui/\(getuid())/\(label)"])
+        try? FileManager.default.removeItem(at: plistURL)
+        return !FileManager.default.fileExists(atPath: plistURL.path)
+    }
+}
+
+// MARK: - Icon
+
+/// A closed MacBook, drawn rather than borrowed from SF Symbols — there is no
+/// stock symbol for a shut lid, which is the one thing this app is about.
+/// Filled means "closing the lid keeps this Mac awake".
+enum LidIcon {
+    enum State {
+        case awake, asleep, warning
+    }
+
+    static func image(for state: State) -> NSImage {
+        if state == .warning {
+            let image = NSImage(systemSymbolName: "exclamationmark.triangle.fill",
+                                accessibilityDescription: "clamshell needs attention")
+            image?.isTemplate = true
+            return image ?? NSImage()
+        }
+
+        let size = NSSize(width: 18, height: 13)
+        let filled = (state == .awake)
+
+        let image = NSImage(size: size, flipped: false) { _ in
+            NSColor.black.set()
+
+            // The closed machine: one thin slab with the lid seam across it.
+            let body = NSBezierPath(
+                roundedRect: NSRect(x: 1.5, y: 3.8, width: 15.0, height: 4.4),
+                xRadius: 1.3, yRadius: 1.3
+            )
+            let seam = NSBezierPath()
+            seam.move(to: NSPoint(x: 2.6, y: 6.0))
+            seam.line(to: NSPoint(x: 15.4, y: 6.0))
+
+            if filled {
+                body.fill()
+                // Punch the seam out of the solid slab so it still reads as a
+                // laptop rather than a plain block.
+                NSGraphicsContext.current?.compositingOperation = .clear
+                seam.lineWidth = 0.9
+                seam.stroke()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
+            } else {
+                body.lineWidth = 1.2
+                body.stroke()
+                seam.lineWidth = 0.9
+                seam.stroke()
+            }
+
+            // The desk it sits on, so the shape reads as a laptop and not a box.
+            NSColor.black.set()
+            let desk = NSBezierPath()
+            desk.move(to: NSPoint(x: 0.5, y: 2.2))
+            desk.line(to: NSPoint(x: 17.5, y: 2.2))
+            desk.lineWidth = 1.1
+            desk.lineCapStyle = .round
+            desk.stroke()
+
+            return true
+        }
+
+        image.isTemplate = true
+        return image
     }
 }
 
@@ -108,26 +267,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateIcon() {
         guard let button = statusItem.button else { return }
 
-        let symbol: String
+        let state: LidIcon.State
         let description: String
 
         if !CLI.isInstalled {
-            symbol = "exclamationmark.triangle.fill"
+            state = .warning
             description = "clamshell is not installed"
         } else if let status, !status.watcherRunning {
-            symbol = "exclamationmark.triangle.fill"
+            state = .warning
             description = "clamshell watcher is not running"
         } else if let status, status.sleepDisabled {
-            symbol = "display"
+            state = .awake
             description = "Lid closed keeps this Mac awake"
         } else {
-            symbol = "moon.zzz.fill"
+            state = .asleep
             description = "Lid closed sends this Mac to sleep"
         }
 
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: description)
-        image?.isTemplate = true
-        button.image = image
+        button.image = LidIcon.image(for: state)
         button.toolTip = description
     }
 
@@ -136,16 +293,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
 
         guard CLI.isInstalled else {
-            addInfo(to: menu, "clamshell CLI not found")
-            addInfo(to: menu, "Run: sudo ./scripts/install.sh")
+            addInfo(to: menu, "clamshell CLI not found", bold: true)
+            addInfo(to: menu, "Run: sudo make install")
             menu.addItem(.separator())
+            addLoginItemToggle(to: menu)
             addQuit(to: menu)
             return
         }
 
         guard let status else {
-            addInfo(to: menu, "Unable to read status")
+            addInfo(to: menu, "Unable to read status", bold: true)
             menu.addItem(.separator())
+            addLoginItemToggle(to: menu)
             addQuit(to: menu)
             return
         }
@@ -163,7 +322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addInfo(to: menu, "\(displayText) · \(status.lidClosed ? "lid closed" : "lid open") · \(power)")
 
         if !status.watcherRunning {
-            addInfo(to: menu, "⚠︎ Watcher not running")
+            addInfo(to: menu, "⚠︎ Watcher not running — run: sudo make install")
         }
         if status.mode == "on" && status.displays == 0 {
             addInfo(to: menu, "⚠︎ Awake with no display — will drain battery")
@@ -179,6 +338,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     mode: "off", current: status.mode)
 
         menu.addItem(.separator())
+
+        addLoginItemToggle(to: menu)
 
         let logItem = NSMenuItem(title: "Open Log", action: #selector(openLog), keyEquivalent: "")
         logItem.target = self
@@ -228,6 +389,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item)
     }
 
+    private func addLoginItemToggle(to menu: NSMenu) {
+        let item = NSMenuItem(title: "Open at Login",
+                              action: #selector(toggleLoginItem(_:)), keyEquivalent: "")
+        item.target = self
+        item.state = LoginItem.isEnabled ? .on : .off
+        menu.addItem(item)
+
+        if LoginItem.needsApproval {
+            addInfo(to: menu, "⚠︎ Approve in System Settings → Login Items")
+        }
+    }
+
     private func addQuit(to menu: NSMenu) {
         let item = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)),
                               keyEquivalent: "q")
@@ -245,6 +418,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.refresh()
         }
+    }
+
+    @objc private func toggleLoginItem(_ sender: NSMenuItem) {
+        LoginItem.setEnabled(!LoginItem.isEnabled)
+        refresh()
     }
 
     @objc private func openLog() {

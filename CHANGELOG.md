@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behaviour) — switchable without sudo via `~/.config/clamshell/mode`.
 - **Menu bar app** (Swift/AppKit, `LSUIElement`) showing live state and offering
   one-click mode switching.
+- **Custom closed-lid icon**, drawn with `NSBezierPath` because SF Symbols has no
+  shut-lid glyph. Solid means the lid can be closed without sleeping; outlined
+  means it will sleep; a warning triangle means the watcher has stopped.
+- **Open at Login** toggle using `SMAppService` on macOS 13+, falling back to a
+  LaunchAgent when registration is refused for a locally built app.
 - **`clamshell json`** for machine-readable status.
 - **Behavioural test suite** stubbing the display probe on `PATH`, covering the
   full mode truth table plus fail-safe paths.
