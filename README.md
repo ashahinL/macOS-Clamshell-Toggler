@@ -43,7 +43,7 @@ to sleep, and a warning triangle if the watcher has stopped.
   instead of staying lit, while wifi, audio and running jobs carry on
 - **Fails safe** — if anything is unreadable or unexpected, normal sleep wins
 - **Survives reboots** — runs as a `launchd` system daemon
-- **Tiny** — a shell script and a ~250-line menu bar app; no background frameworks
+- **Tiny** — one shell script and one Swift file; no daemons beyond launchd, no frameworks
 - **Cleanly reversible** — `sudo make uninstall` restores stock behaviour
 
 ## How it works
@@ -125,8 +125,8 @@ costs about 23 ms.
 ## Install
 
 ```sh
-git clone https://github.com/ashahinL/macos-clamshell.git
-cd macos-clamshell
+git clone https://github.com/ashahinL/macOS-Clamshell-Toggler.git
+cd macOS-Clamshell-Toggler
 
 make                    # build the menu bar app
 sudo make install       # install the CLI, the watcher and the app
@@ -147,8 +147,8 @@ LaunchAgent at `~/Library/LaunchAgents/local.clamshell.menubar.plist`.
 
 ## Usage
 
-Click the menu bar icon to see the current state and switch modes. Everything is
-also available from the command line:
+Click the menu bar icon to see the current state and switch modes. The command
+line does the same and a little more — screen blanking is CLI-only:
 
 ```sh
 clamshell            # status
@@ -212,38 +212,26 @@ Both unload the daemon, remove the installed files, and reset `disablesleep` to 
 make test
 ```
 
-The display probe is stubbed with a fake `ioreg` on `PATH`, so the full truth table
-— including the no-display and probe-failure paths — is verified without physically
-unplugging a monitor:
+`ioreg` is stubbed on `PATH`, so the whole mode truth table — including the
+no-display and probe-failure paths — is verified without physically unplugging a
+monitor. The blanking decision is driven directly, so the lid, the display count
+and the preference can be varied independently.
 
-```
-mode → SleepDisabled  (1 = stay awake with lid closed)
+What it covers:
 
-  ok   auto + monitor attached  → stay awake
-  ok   auto + no monitor        → sleep
-  ok   on   + no monitor        → stay awake
-  ok   off  + monitor attached  → sleep
-
-fail-safe  (unknown state must never keep the Mac awake)
-
-  ok   missing mode file        → auto
-  ok   garbage mode file        → auto
-  ok   ioreg failure + auto     → sleep
-
-daemon environment  (launchd supplies PATH and nothing else)
-
-  ok   starts with no HOME in the environment
-
-blanking the built-in screen  (a black screen nobody asked for is the worst outcome)
-
-  ok   on + lid shut + no monitor  → screen off
-  ok   stays off, re-armed not spammed
-  ok   one closed sample alone     → left alone
-  ok   monitor attached            → left alone
-  ok   mac not held awake          → left alone
-  ok   lid open                    → left alone
-  ok   blanking turned off         → left alone
-```
+- **mode → SleepDisabled** — every combination of mode and attached displays
+- **fail-safe** — a missing mode file, a garbage one and a failing `ioreg` must
+  all resolve to "let it sleep"
+- **daemon environment** — the watcher starts under `env -i`; the regression
+  test for the unbound `$HOME` that once left it crash-looping
+- **blanking** — the built-in screen is only ever slept with the lid shut, no
+  monitor attached and the Mac held awake; every other combination must leave
+  it alone
+- **installer** — the error log is rotated inside the `bootout`/`bootstrap`
+  window, and the previous copy kept rather than deleted
+- **versions** — the app bundle and the CLI agree
+- **syntax and shellcheck** — every script parses, and `shellcheck` runs at
+  `--severity=warning` when installed (`brew install shellcheck`)
 
 ## Troubleshooting
 
@@ -302,13 +290,21 @@ simply full — hidden items are common on notched displays.
 ## Layout
 
 ```
-bin/clamshell                     CLI and watcher
-launchd/local.clamshell.plist.in  LaunchDaemon template
-gui/Clamshell/                    menu bar app (Swift/AppKit)
+bin/clamshell                     CLI and watcher — all the state lives here
+launchd/local.clamshell.plist.in  LaunchDaemon template (__MODE_FILE__ is
+                                  substituted at install time)
+gui/Clamshell/main.swift          menu bar app (Swift/AppKit) — a view only
+gui/Clamshell/Info.plist          app bundle metadata
 scripts/install.sh                installer
-scripts/uninstall.sh              uninstaller
+scripts/uninstall.sh              uninstaller, installed as clamshell-uninstall
 tests/test-clamshell.sh           behavioural tests
+Makefile                          build, test, install
+.github/workflows/ci.yml          runs the suite and shellcheck on macOS
 ```
+
+The dependency runs one way: the menu bar app shells out to the CLI, the CLI
+writes the mode file, and the root daemon reads it. The app holds no state of
+its own, so anything it can do is also doable from a terminal.
 
 ## License
 

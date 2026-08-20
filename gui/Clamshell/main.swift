@@ -228,6 +228,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var timer: Timer?
     private var status: Status?
 
+    /// While the menu is open the contents must be live; while it is shut the
+    /// only consumer is the icon.
+    private static let openInterval: TimeInterval = 2
+    private static let idleInterval: TimeInterval = 15
+
+    private static let logPath = "/var/log/clamshell.log"
+
     /// Status is read by spawning the CLI, so it happens off the main thread.
     /// A menu that blocks on a subprocess while it is opening visibly hitches.
     private let probe = DispatchQueue(label: "local.clamshell.probe", qos: .utility)
@@ -240,6 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var drainWarning: NSMenuItem!
     private var approvalWarning: NSMenuItem!
     private var loginToggle: NSMenuItem!
+    private var logItem: NSMenuItem!
 
     // Warning text is applied only while the warning is showing. `isHidden`
     // stops an item drawing but AppKit still measures its title, so a hidden
@@ -258,11 +266,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         status = CLI.status()
         apply()
 
-        // Deliberately on .common rather than the default run loop mode: while
-        // a menu is open AppKit runs in event-tracking mode, and a plain
-        // scheduled timer is starved for exactly as long as the user is
-        // looking at it — which is the one moment the contents must be live.
-        let ticker = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+        startTicker(interval: Self.idleInterval)
+    }
+
+    /// Poll fast only while someone is looking.
+    ///
+    /// `clamshell json` spawns half a dozen short-lived processes and costs
+    /// ~140ms. At the old flat 2s that ran forever, menu open or not — a
+    /// steady ~7% of a core spent on a reading nobody was reading, which is a
+    /// poor look for an app that exists to save battery. Closed, the only
+    /// consumer is the menu bar icon, and 15s is plenty for that.
+    ///
+    /// Deliberately on `.common` rather than the default run loop mode: while
+    /// a menu is open AppKit runs in event-tracking mode, and a plain
+    /// scheduled timer is starved for exactly as long as the user is looking
+    /// at it — which is the one moment the contents must be live.
+    private func startTicker(interval: TimeInterval) {
+        timer?.invalidate()
+        let ticker = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.refresh()
         }
         RunLoop.main.add(ticker, forMode: .common)
@@ -279,6 +300,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         apply()
         refresh()
     }
+
+    func menuWillOpen(_ menu: NSMenu) { startTicker(interval: Self.openInterval) }
+    func menuDidClose(_ menu: NSMenu) { startTicker(interval: Self.idleInterval) }
 
     // MARK: Construction
 
@@ -332,9 +356,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         approvalWarning.isHidden = true
         menu.addItem(approvalWarning)
 
-        let logItem = NSMenuItem(title: "Open Log", action: #selector(openLog), keyEquivalent: "")
+        logItem = NSMenuItem(title: "Open Log", action: #selector(openLog), keyEquivalent: "")
         logItem.target = self
-        logItem.isEnabled = true
         menu.addItem(logItem)
 
         // Routed through our own selector rather than NSApplication.terminate:.
@@ -412,6 +435,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Push current state into the existing items. Never adds or removes any.
     private func apply() {
         updateIcon()
+
+        // The daemon writes the log on its first state change, so before then
+        // there is nothing to open. A menu item that does nothing when clicked
+        // reads as broken, so grey it out and say why.
+        let haveLog = FileManager.default.fileExists(atPath: Self.logPath)
+        logItem.isEnabled = haveLog
+        logItem.toolTip = haveLog ? Self.logPath : "No log yet — the watcher has not recorded a change"
 
         let loginOn = LoginItem.isEnabled
         loginToggle.state = loginOn ? .on : .off
@@ -514,10 +544,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openLog() {
-        let log = URL(fileURLWithPath: "/var/log/clamshell.log")
-        if FileManager.default.fileExists(atPath: log.path) {
-            NSWorkspace.shared.open(log)
-        }
+        guard FileManager.default.fileExists(atPath: Self.logPath) else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: Self.logPath))
     }
 }
 

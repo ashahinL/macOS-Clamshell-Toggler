@@ -28,4 +28,4 @@ pmset -a disablesleep 0 || true
 
 echo
 say "done — SleepDisabled is now $(pmset -g | awk '/SleepDisabled/{print $2}')"
-echo '    Your ~/.config/clamshell/mode file was left in place.'
+echo '    Your settings in ~/.config/clamshell (mode, blank) were left in place.'

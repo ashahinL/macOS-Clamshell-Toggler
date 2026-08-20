@@ -7,13 +7,12 @@
 # external display is actually attached — so a lid closed in a bag still
 # sleeps normally instead of cooking.
 #
-# https://github.com/ashahinL/macos-clamshell
+# https://github.com/ashahinL/macOS-Clamshell-Toggler
 # SPDX-License-Identifier: MIT
 
 set -uo pipefail
 
 readonly VERSION='1.1.0'
-readonly LABEL='local.clamshell'
 # Overridable so the tests can exercise the code paths that log. Note that a
 # redirection bash cannot open makes it skip the command entirely, so an
 # unwritable log would silently stop pmset from being called at all.
@@ -145,8 +144,8 @@ write_mode() {
 	if [[ -n "$(watcher_pid)" ]]; then
 		printf '%sApplies within %ss.%s\n' "$C_DIM" "$MODE_POLL" "$C_RESET"
 	else
-		printf '%sWatcher is not running — run: sudo clamshell-install%s\n' \
-			"$C_YELLOW" "$C_RESET"
+		printf '%sWatcher is not running. Start it with:%s\n' "$C_YELLOW" "$C_RESET"
+		printf '  sudo launchctl bootstrap system /Library/LaunchDaemons/local.clamshell.plist\n'
 	fi
 }
 
@@ -389,16 +388,16 @@ ${C_BOLD}COMMANDS${C_RESET}
   version        Show the version
 
 ${C_BOLD}NOTES${C_RESET}
-  Switching modes never needs sudo. The change is picked up by the
-  background watcher within ${MODE_POLL}s; a display being plugged
-  in or out is noticed within ${DISPLAY_POLL}s.
+  Switching modes never needs sudo. The watcher picks the change up
+  within ${MODE_POLL}s, and notices a display being plugged in or
+  unplugged within ${DISPLAY_POLL}s.
 
   ${C_YELLOW}on${C_RESET} keeps the machine awake with no display attached, which
   will drain the battery and heat the Mac in a closed bag. Prefer
   ${C_BOLD}auto${C_RESET} unless you specifically need a headless session.
 
 ${C_BOLD}HOMEPAGE${C_RESET}
-  https://github.com/ashahinL/macos-clamshell
+  https://github.com/ashahinL/macOS-Clamshell-Toggler
 HELP
 }
 

@@ -28,6 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   since "cannot tell" must not be reported as "off".
 
 ### Fixed
+- **CI was failing.** `LABEL` in `bin/clamshell` had been unused since the
+  initial commit and is an SC2034 warning, which `shellcheck --severity=warning`
+  exits non-zero on, failing `make test`. Removed.
+- **`clamshell status` pointed at a command that does not exist.** When the
+  watcher was not running it advised `sudo clamshell-install`; only
+  `clamshell-uninstall` is ever installed. It now prints the `launchctl
+  bootstrap` line that actually starts the daemon.
+- **Every GitHub URL pointed at the wrong repository**, in the CLI header, the
+  `help` output, the README, CONTRIBUTING and the CHANGELOG release links.
+- **The app bundle version had drifted** a release behind the CLI. Bumped, and
+  the suite now asserts the two match so it cannot drift silently again.
+- **"Open Log" did nothing when no log existed yet**, which reads as a broken
+  menu item. It is greyed out until the watcher has recorded a change.
 - **The panel-state probe was measuring the wrong thing.** `AppleARMBacklight`'s
   `BrightnessMicroAmps` tracks the *configured* backlight current for the current
   brightness setting, and read an identical 3640 with the lid open, closed and
@@ -38,6 +51,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   constant 65536), which reads 0 when the panel is off.
 
 ### Changed
+- **The menu bar app polls only when someone is looking.** `clamshell json`
+  spawns half a dozen short-lived processes and costs ~140ms; running it every
+  2s whether or not the menu was open burned a steady ~7% of a core in an app
+  whose purpose is saving battery. Now 2s while the menu is open and 15s while
+  it is shut, which is ample for the icon.
 - **A reinstall now starts against an empty error log.** Errors left by a
   version that has just been replaced read as live failures — a stale
   `HOME: unbound variable` from an already-fixed crash loop looked like a fresh
@@ -51,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   makes it skip the command entirely, so an unwritable log silently stopped
   `pmset` being called at all — which is also what let the tests reach it.
 
-[1.1.0]: https://github.com/ashahinL/macos-clamshell/releases/tag/v1.1.0
+[1.1.0]: https://github.com/ashahinL/macOS-Clamshell-Toggler/releases/tag/v1.1.0
 
 ## [1.0.0] - 2026-08-20
 
@@ -85,4 +103,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Installer and uninstaller** that resolve the invoking user, generate the
   LaunchDaemon from a template, and self-verify the result.
 
-[1.0.0]: https://github.com/ashahinL/macos-clamshell/releases/tag/v1.0.0
+[1.0.0]: https://github.com/ashahinL/macOS-Clamshell-Toggler/releases/tag/v1.0.0

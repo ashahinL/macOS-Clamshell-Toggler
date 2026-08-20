@@ -177,6 +177,22 @@ else
 	fail=$((fail + 1))
 fi
 
+printf '\n\033[1mversions\033[0m\n\n'
+
+# The app bundle carries its own version string, which drifted to a release
+# behind the CLI once already. Nothing at build time reconciles them, so assert
+# it here.
+cli_version="$("$CLAMSHELL" version)"
+plist_version="$(plutil -extract CFBundleShortVersionString raw "$REPO/gui/Clamshell/Info.plist" 2>/dev/null)"
+if [[ "$cli_version" == "$plist_version" ]]; then
+	printf '  \033[32mok\033[0m   app bundle version matches the CLI (%s)\n' "$cli_version"
+	pass=$((pass + 1))
+else
+	printf '  \033[31mFAIL\033[0m version drift — CLI %s, Info.plist %s\n' \
+		"$cli_version" "$plist_version"
+	fail=$((fail + 1))
+fi
+
 printf '\n\033[1msyntax\033[0m\n\n'
 for f in "$REPO"/bin/clamshell "$REPO"/scripts/*.sh "$REPO"/tests/*.sh; do
 	if bash -n "$f" 2>/dev/null; then
