@@ -240,6 +240,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var drainWarning: NSMenuItem!
     private var approvalWarning: NSMenuItem!
     private var loginToggle: NSMenuItem!
+
+    // Warning text is applied only while the warning is showing. `isHidden`
+    // stops an item drawing but AppKit still measures its title, so a hidden
+    // item with a long string silently pads the whole menu's width.
+    private let watcherWarningText = "⚠︎ Watcher not running"
+    private let drainWarningText = "⚠︎ No display — battery will drain"
+    private let approvalWarningText = "⚠︎ Approve in Login Items"
     private var modeItems: [String: NSMenuItem] = [:]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -284,8 +291,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(headlineItem)
         menu.addItem(contextItem)
 
-        watcherWarning = infoItem("⚠︎ Watcher not running — run: sudo make install")
-        drainWarning = infoItem("⚠︎ Awake with no display — will drain battery")
+        watcherWarning = infoItem("")
+        drainWarning = infoItem("")
         for item in [watcherWarning!, drainWarning!] {
             item.isHidden = true
             menu.addItem(item)
@@ -328,7 +335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loginToggle.isEnabled = true
         menu.addItem(loginToggle)
 
-        approvalWarning = infoItem("⚠︎ Approve in System Settings → Login Items")
+        approvalWarning = infoItem("")
         approvalWarning.isHidden = true
         menu.addItem(approvalWarning)
 
@@ -374,6 +381,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if item.isHidden != hidden { item.isHidden = hidden }
     }
 
+    /// Show or hide a warning, carrying its text with it so a hidden warning
+    /// contributes nothing to the menu's measured width.
+    private func setWarning(_ item: NSMenuItem, _ text: String, showing: Bool) {
+        if showing {
+            setInfoTitle(item, text)
+            setHidden(item, false)
+        } else {
+            setHidden(item, true)
+            setInfoTitle(item, "")
+        }
+    }
+
     // MARK: State
 
     private func refresh() {
@@ -392,13 +411,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let loginOn = LoginItem.isEnabled
         loginToggle.state = loginOn ? .on : .off
-        setHidden(approvalWarning, !LoginItem.needsApproval)
+        setWarning(approvalWarning, approvalWarningText, showing: LoginItem.needsApproval)
 
         guard CLI.isInstalled else {
             setInfoTitle(headlineItem, "clamshell CLI not found", bold: true)
             setInfoTitle(contextItem, "Run: sudo make install")
-            setHidden(watcherWarning, true)
-            setHidden(drainWarning, true)
+            setWarning(watcherWarning, watcherWarningText, showing: false)
+            setWarning(drainWarning, drainWarningText, showing: false)
             modeItems.values.forEach { $0.state = .off; $0.isEnabled = false }
             return
         }
@@ -406,8 +425,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let status else {
             setInfoTitle(headlineItem, "Unable to read status", bold: true)
             setInfoTitle(contextItem, "clamshell json returned nothing")
-            setHidden(watcherWarning, true)
-            setHidden(drainWarning, true)
+            setWarning(watcherWarning, watcherWarningText, showing: false)
+            setWarning(drainWarning, drainWarningText, showing: false)
             modeItems.values.forEach { $0.state = .off; $0.isEnabled = false }
             return
         }
@@ -423,8 +442,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let power = status.onBattery ? "battery" : "AC power"
         setInfoTitle(contextItem, "\(displays) · \(lid) · \(power)")
 
-        setHidden(watcherWarning, status.watcherRunning)
-        setHidden(drainWarning, !(status.mode == "on" && status.displays == 0))
+        setWarning(watcherWarning, watcherWarningText, showing: !status.watcherRunning)
+        setWarning(drainWarning, drainWarningText,
+                   showing: status.mode == "on" && status.displays == 0)
 
         for (mode, item) in modeItems {
             item.isEnabled = true
