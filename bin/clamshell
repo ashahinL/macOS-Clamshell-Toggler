@@ -94,16 +94,27 @@ watcher_pid() {
 	pgrep -f "clamshell --watch" 2>/dev/null | head -1
 }
 
-# Backlight current for the built-in panel, in microamps.
+# Is the built-in panel actually lit? Empty if it cannot be determined.
 #
-# The same AppleARMBacklight node the brightness slider drives. This is what
-# proved the panel stays lit behind a closed lid: a steady 3640uA across a full
-# minute with the lid shut. Reporting only — the blanking logic triggers off the
-# lid, not off this, so a registry change here costs a status line, not the
-# behaviour.
-backlight_ua() {
-	ioreg -c AppleARMBacklight -r -d1 -w0 2>/dev/null |
-		sed -n 's/.*"BrightnessMicroAmps"={[^}]*"value"=\([0-9]*\).*/\1/p'
+# Not AppleARMBacklight's BrightnessMicroAmps: that tracks the *configured*
+# backlight current for the current brightness setting and sits unchanged at the
+# same value whether the panel is powered or not — measured reading 3640 across
+# lid-open, lid-closed-docked and lid-closed-undocked alike. It says what
+# brightness is selected, not whether anything is lit.
+#
+# IOMFBBrightnessLevel on the built-in framebuffer does track it, reading 0 when
+# the panel is off. The built-in one is the node matched as `disp0`; external
+# ports come up as `dispext0`/`dispext1` and report a constant 65536.
+#
+# Reporting only — the blanking logic triggers off the lid, not off this, so a
+# registry change here costs a status line rather than the behaviour.
+internal_panel_level() {
+	ioreg -c IOMobileFramebufferShim -r -d1 -w0 2>/dev/null | awk '
+		# awk runs END even after exit, so `done` stops a second print.
+		/\+-o /                  { if (!done && name ~ /"disp0,/ && lvl != "") { print lvl; done=1; exit } name=""; lvl="" }
+		/"IONameMatched"/        { name = $0 }
+		/"IOMFBBrightnessLevel"/ { lvl = $0; sub(/.* = /, "", lvl) }
+		END                      { if (!done && name ~ /"disp0,/ && lvl != "") print lvl }'
 }
 
 # -------------------------------------------------------------------- mode ---
@@ -193,11 +204,14 @@ BLANK_LAST=0     # epoch seconds of the last display-sleep call
 # Sleep the built-in panel when nothing can possibly be looking at it.
 #
 # With `disablesleep` set, macOS blocks the sleep the lid would normally cause
-# but never tells the display to go dark. Measured on an M4 Air: a steady 3640uA
-# of backlight current for a full minute with the lid shut — heat and battery
-# spent lighting the inside of a closed laptop. `pmset displaysleepnow` drops
-# the panel without touching the rest of the machine, so wifi, audio and any
-# running job carry on untouched.
+# but never tells the display to go dark. Measured on an M4 Air with this
+# blanking disabled: 100 consecutive samples over 50s, lid shut, no monitor —
+# the built-in panel's IOMFBBrightnessLevel held at 10047921 the whole time and
+# never once dropped to 0. Docked, the same probe reads 0, so macOS does handle
+# the clamshell case and only the headless one is left lit.
+#
+# `pmset displaysleepnow` drops the panel without touching the rest of the
+# machine, so wifi, audio and any running job carry on untouched.
 #
 # Guarded hard, because a black screen the user cannot explain is a far worse
 # failure than a lit one:
@@ -293,6 +307,11 @@ cmd_status() {
 	printf '  power               %s\n' "$(power_source)"
 	printf '  sleep disabled      %s\n' "${awake:-unknown}"
 	printf '  blank when closed   %s\n' "$(read_blank)"
+	case "$(internal_panel_level)" in
+		0)          printf '  built-in screen     off\n' ;;
+		''|*[!0-9]*) printf '  built-in screen     unknown\n' ;;
+		*)          printf '  built-in screen     on\n' ;;
+	esac
 	if [[ -n "$pid" ]]; then
 		printf '  watcher             %srunning%s (pid %s)\n' "$C_GREEN" "$C_RESET" "$pid"
 	else
@@ -309,17 +328,20 @@ cmd_status() {
 
 # Machine-readable status, for the menu bar app and for scripting.
 cmd_json() {
-	local pid awake ua
+	local pid awake lvl panel
 	local lid_closed=false on_battery=false sleep_off=false watching=false
 	local blank=false
 
 	pid=$(watcher_pid)
 	awake=$(sleep_disabled)
 
-	# -1 rather than null: the field stays a number for anything parsing it,
-	# and an unreadable backlight is reported rather than silently zeroed.
-	ua=$(backlight_ua)
-	[[ "$ua" =~ ^[0-9]+$ ]] || ua=-1
+	# Tri-state, because "cannot tell" is a real answer here and must not be
+	# reported as "off": null when the panel level is unreadable.
+	lvl=$(internal_panel_level)
+	if   [[ "$lvl" == '0' ]];         then panel=false
+	elif [[ "$lvl" =~ ^[0-9]+$ ]];    then panel=true
+	else                                   panel=null
+	fi
 
 	lid_is_closed && lid_closed=true
 	[[ "$(power_source)" == 'Battery Power' ]] && on_battery=true
@@ -335,7 +357,7 @@ cmd_json() {
 	printf '"onBattery":%s,'      "$on_battery"
 	printf '"sleepDisabled":%s,'  "$sleep_off"
 	printf '"blankWhenClosed":%s,' "$blank"
-	printf '"backlightMicroAmps":%s,' "$ua"
+	printf '"internalPanelOn":%s,' "$panel"
 	printf '"watcherRunning":%s,' "$watching"
 	printf '"modeFile":"%s"'      "$MODE_FILE"
 	printf '}\n'

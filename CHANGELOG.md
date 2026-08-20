@@ -9,8 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - **The built-in screen now sleeps behind a closed lid.** Blocking the lid-close
-  sleep left the panel fully lit: measured at a steady 3640 uA of backlight
-  current across a full minute with the lid shut, on battery, in `on` mode. The
+  sleep left the panel fully lit: with this blanking disabled, 100 consecutive
+  samples over 50s with the lid shut and no monitor attached showed the built-in
+  panel's `IOMFBBrightnessLevel` holding at 10047921 and never reaching 0. Docked,
+  the same probe reads 0, so macOS handles real clamshell mode and only the
+  headless case stays lit. The
   watcher now calls `pmset displaysleepnow` once the lid has read closed on
   consecutive polls with no external display attached, which drops the display
   without touching the rest of the machine — wifi, audio and running jobs carry
@@ -19,8 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and a single stray "closed" sample is not enough.
 - **`clamshell blank [on|off]`** to control that, defaulting to `on`. Stored
   beside the mode file, so it needs no sudo either.
-- **`blankWhenClosed` and `backlightMicroAmps` in `clamshell json`**, and a
-  `blank when closed` line in `clamshell status`.
+- **`blankWhenClosed` and `internalPanelOn` in `clamshell json`**, plus
+  `blank when closed` and `built-in screen` lines in `clamshell status`.
+  `internalPanelOn` is a tri-state — `null` when the panel state cannot be read,
+  since "cannot tell" must not be reported as "off".
+
+### Fixed
+- **The panel-state probe was measuring the wrong thing.** `AppleARMBacklight`'s
+  `BrightnessMicroAmps` tracks the *configured* backlight current for the current
+  brightness setting, and read an identical 3640 with the lid open, closed and
+  docked, and closed and undocked — including while the panel was demonstrably
+  off. It reports what brightness is selected, not whether anything is lit. The
+  probe now reads `IOMFBBrightnessLevel` from the built-in framebuffer, the node
+  matched as `disp0` (external ports appear as `dispext0`/`dispext1` and report a
+  constant 65536), which reads 0 when the panel is off.
 
 ### Changed
 - **A reinstall now starts against an empty error log.** Errors left by a

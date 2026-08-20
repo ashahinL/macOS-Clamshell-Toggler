@@ -71,9 +71,14 @@ seconds**, since that probe costs ~23 ms and nothing races it.
 ### Turning the built-in screen off
 
 Blocking the sleep leaves one thing behind: macOS never tells the built-in
-display to go dark. Measured on an M4 Air in `on` mode, backlight current sat at
-a steady 3640 µA for a full minute with the lid shut — heat and battery spent
-lighting the inside of a closed laptop.
+display to go dark. Measured on an M4 Air with this blanking disabled — lid
+shut, no monitor attached, 100 samples over 50 seconds — the built-in panel
+never went off once. That is heat and battery spent lighting the inside of a
+closed laptop.
+
+Docked, the same probe reads 0 within a second of the lid closing, so macOS does
+handle real clamshell mode. It is only the headless case, which Apple never
+designed for, that stays lit.
 
 So once the lid has been shut for a couple of polls with **no external display
 attached**, the daemon calls `pmset displaysleepnow`. That sleeps the display
@@ -90,8 +95,8 @@ these hold, and the moment any stops holding the daemon backs off:
   blank a screen you are using
 
 In practice that means it fires only in `on` mode with no monitor — the headless
-case. With a monitor attached macOS already handles the internal panel, and in
-`auto` mode with no monitor the machine simply sleeps.
+case. With a monitor attached macOS blanks the internal panel itself (measured),
+and in `auto` mode with no monitor the machine simply sleeps.
 
 Turn it off with `clamshell blank off` if you need the panel lit behind a closed
 lid.
@@ -266,6 +271,11 @@ clamshell status
 clamshell log
 cat /var/log/clamshell.err
 ```
+
+`clamshell status` reports `built-in screen` as `on` or `off`, read from the
+built-in framebuffer's `IOMFBBrightnessLevel`. Note that `AppleARMBacklight`'s
+`BrightnessMicroAmps` is *not* a usable indicator — it reports the configured
+brightness and reads the same whether the panel is powered or not.
 
 `clamshell.err` is emptied on every install, so anything in it happened under
 the version you are running now. The previous contents are kept one generation
