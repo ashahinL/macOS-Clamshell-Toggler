@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   monitor still sleeps normally.
 - **External display detection** through IOKit `SinkDeviceOUI` registry nodes,
   which works without a GUI session and costs ~23 ms per poll.
+- **Sub-second mode switching.** The watcher re-reads the mode file every
+  second and re-probes displays every five, so switching mode and immediately
+  closing the lid no longer races a stale flag.
 - **Three modes** — `auto` (display-aware), `on` (always awake), `off` (stock
   behaviour) — switchable without sudo via `~/.config/clamshell/mode`.
 - **Menu bar app** (Swift/AppKit, `LSUIElement`) showing live state and offering

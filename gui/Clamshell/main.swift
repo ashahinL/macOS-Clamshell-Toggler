@@ -240,19 +240,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         refresh()
 
-        // The watcher polls every 10s; matching that keeps the icon honest
-        // without doing meaningful work.
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        // Deliberately on .common rather than the default run loop mode: while
+        // a menu is open AppKit runs in event-tracking mode, and a plain
+        // scheduled timer is starved for exactly as long as the user is
+        // looking at it — which is the one moment the contents must be live.
+        let ticker = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        RunLoop.main.add(ticker, forMode: .common)
+        timer = ticker
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
     }
 
-    /// Rebuild just before the menu is shown, so it is never stale on click.
-    func menuWillOpen(_ menu: NSMenu) {
+    /// Rebuild before the menu is laid out, so it is never stale on open.
+    ///
+    /// This has to be `menuNeedsUpdate` and not `menuWillOpen`: the latter runs
+    /// after AppKit has already sized and laid out the items, so edits made
+    /// there may not show until the next time the menu is opened.
+    func menuNeedsUpdate(_ menu: NSMenu) {
         refresh()
     }
 
@@ -412,11 +420,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func selectMode(_ sender: NSMenuItem) {
         guard let mode = sender.representedObject as? String else { return }
         CLI.setMode(mode)
-
-        // The watcher needs a moment to notice the new mode file.
         refresh()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.refresh()
+
+        // The mode file changes at once, but the headline reflects the flag the
+        // watcher actually applied — which lands about a second later. Poll
+        // across that window so the icon and headline settle without waiting
+        // for the next tick.
+        for delay in [0.3, 0.8, 1.5, 2.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.refresh()
+            }
         }
     }
 

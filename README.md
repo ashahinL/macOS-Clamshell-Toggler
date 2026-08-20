@@ -188,6 +188,17 @@ fail-safe  (unknown state must never keep the Mac awake)
 
 ## Troubleshooting
 
+**Switching to `off` with the lid already closed does not sleep the Mac.**
+Expected. macOS decides whether to sleep at the moment the lid closes; clearing
+the flag afterwards does not retroactively trigger that decision, and nothing
+re-evaluates until the next lid event. Open and close the lid and it sleeps.
+Forcing it would mean calling `pmset sleepnow` behind your back, which is a
+worse surprise than the wait.
+
+**A mode switch takes a moment to take effect.** About a second. The watcher
+re-reads the mode file every second and re-probes displays every five, so
+closing the lid the instant after switching can still catch the old value.
+
 **The flag does not flip.** Check that the watcher is alive and read its log:
 
 ```sh

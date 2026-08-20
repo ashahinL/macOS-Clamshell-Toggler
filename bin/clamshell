@@ -15,7 +15,8 @@ set -uo pipefail
 readonly VERSION='1.0.0'
 readonly LABEL='local.clamshell'
 readonly LOG_FILE='/var/log/clamshell.log'
-readonly POLL_INTERVAL=10
+readonly MODE_POLL=1        # how often the chosen mode is re-read
+readonly DISPLAY_POLL=5     # how often displays are re-probed
 
 # ------------------------------------------------------------------ output ---
 
@@ -105,7 +106,7 @@ write_mode() {
 		off)  printf 'Normal macOS behaviour: closing the lid always sleeps.\n' ;;
 	esac
 	if [[ -n "$(watcher_pid)" ]]; then
-		printf '%sApplies within %ss.%s\n' "$C_DIM" "$POLL_INTERVAL" "$C_RESET"
+		printf '%sApplies within %ss.%s\n' "$C_DIM" "$MODE_POLL" "$C_RESET"
 	else
 		printf '%sWatcher is not running — run: sudo clamshell-install%s\n' \
 			"$C_YELLOW" "$C_RESET"
@@ -128,21 +129,46 @@ want_value() {
 
 # ----------------------------------------------------------------- commands ---
 
+# Cheap change-detector for the mode file: mtime plus size, ~1ms.
+mode_stamp() {
+	[[ -n "$MODE_FILE" ]] || return 0
+	stat -f '%m %z' "$MODE_FILE" 2>/dev/null
+}
+
 cmd_watch() {
 	[[ $EUID -eq 0 ]] || die "--watch must run as root (it is started by launchd)"
 
-	local prev='' want
+	# Two cadences, because the two inputs have very different urgency.
+	#
+	# A mode switch is a deliberate act, and the user may well close the lid
+	# straight afterwards — if the flag has not been applied by then, the Mac
+	# sleeps and the switch looks broken. So the mode file is checked every
+	# second, which costs a stat.
+	#
+	# Display changes are not raced against anything in the same way, and
+	# probing costs ~23ms of ioreg, so that stays on the slower cadence.
+	local prev='' want stamp='' new_stamp countdown=0
+
 	while :; do
-		want=$(want_value)
-		if [[ "$want" != "$prev" ]]; then
-			if pmset -b disablesleep "$want" 2>>"$LOG_FILE"; then
-				printf '%s mode=%s displays=%s disablesleep=%s\n' \
-					"$(date '+%Y-%m-%d %H:%M:%S')" "$(read_mode)" \
-					"$(external_displays)" "$want" >> "$LOG_FILE"
-				prev="$want"
+		new_stamp="$(mode_stamp)"
+
+		if [[ "$new_stamp" != "$stamp" ]] || (( countdown <= 0 )); then
+			stamp="$new_stamp"
+			countdown=$DISPLAY_POLL
+
+			want=$(want_value)
+			if [[ "$want" != "$prev" ]]; then
+				if pmset -b disablesleep "$want" 2>>"$LOG_FILE"; then
+					printf '%s mode=%s displays=%s disablesleep=%s\n' \
+						"$(date '+%Y-%m-%d %H:%M:%S')" "$(read_mode)" \
+						"$(external_displays)" "$want" >> "$LOG_FILE"
+					prev="$want"
+				fi
 			fi
 		fi
-		sleep "$POLL_INTERVAL"
+
+		sleep "$MODE_POLL"
+		countdown=$(( countdown - MODE_POLL ))
 	done
 }
 
@@ -224,7 +250,8 @@ ${C_BOLD}COMMANDS${C_RESET}
 
 ${C_BOLD}NOTES${C_RESET}
   Switching modes never needs sudo. The change is picked up by the
-  background watcher within ${POLL_INTERVAL} seconds.
+  background watcher within ${MODE_POLL}s; a display being plugged
+  in or out is noticed within ${DISPLAY_POLL}s.
 
   ${C_YELLOW}on${C_RESET} keeps the machine awake with no display attached, which
   will drain the battery and heat the Mac in a closed bag. Prefer
