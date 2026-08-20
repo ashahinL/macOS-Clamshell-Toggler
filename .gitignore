@@ -1,0 +1,21 @@
+# Build artefacts
+build/
+*.o
+*.dSYM/
+*.pkg
+
+# macOS
+.DS_Store
+
+# Agent/IDE context
+.claude/
+.qodo/
+.gemini/
+AGENT_CONTEXT.md
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

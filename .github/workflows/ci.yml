@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test and build
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: brew install shellcheck
+
+      - name: Run test suite
+        run: make test
+
+      - name: Build the menu bar app
+        run: make app
+
+      - name: Verify the app bundle
+        run: |
+          plutil -lint build/Clamshell.app/Contents/Info.plist
+          file build/Clamshell.app/Contents/MacOS/Clamshell
