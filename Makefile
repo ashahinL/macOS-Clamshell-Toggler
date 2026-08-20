@@ -40,10 +40,15 @@ install-cli:
 
 ## Install the menu bar app into /Applications
 install-app: $(APP_BIN)
+	@pkill -f "$(APP_NAME).app/Contents/MacOS/$(APP_NAME)" 2>/dev/null || true
 	@rm -rf $(APP_DEST)
 	@cp -R $(APP_BUNDLE) $(APP_DEST)
 	@echo "installed $(APP_DEST)"
-	@echo "open it with: open $(APP_DEST)"
+	@if [ -n "$(SUDO_USER)" ]; then \
+		sudo -u "$(SUDO_USER)" open $(APP_DEST) && echo "relaunched $(APP_NAME)"; \
+	else \
+		echo "open it with: open $(APP_DEST)"; \
+	fi
 
 ## Install everything
 install: install-cli
