@@ -300,29 +300,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        for (mode, title, subtitle) in [
-            ("auto", "Automatic", "Awake only with a display"),
-            ("on", "Always Awake", "Even with no display"),
-            ("off", "Off", "Normal macOS sleep"),
+        // Explanations live in tooltips rather than inline. As part of the
+        // item titles they were the widest thing in the menu, so they set the
+        // width of every other row too.
+        for (mode, title, help) in [
+            ("auto", "Automatic",
+             "Stay awake with the lid closed, but only while an external display is attached"),
+            ("on", "Always Awake",
+             "Stay awake with the lid closed even with no display attached — this drains the battery"),
+            ("off", "Off",
+             "Normal macOS behaviour: closing the lid sends the Mac to sleep"),
         ] {
             let item = NSMenuItem(title: title, action: #selector(selectMode(_:)), keyEquivalent: "")
             item.target = self
             item.isEnabled = true
             item.representedObject = mode
-
-            let attributed = NSMutableAttributedString(
-                string: title,
-                attributes: [.font: NSFont.menuFont(ofSize: 0)]
-            )
-            attributed.append(NSAttributedString(
-                string: "  \(subtitle)",
-                attributes: [
-                    .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                ]
-            ))
-            item.attributedTitle = attributed
-
+            item.toolTip = help
             modeItems[mode] = item
             menu.addItem(item)
         }
@@ -436,9 +429,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                      bold: true)
 
         let displays = status.displays == 0
-            ? "No external display"
-            : "\(status.displays) external display\(status.displays == 1 ? "" : "s")"
-        let lid = status.lidClosed ? "lid closed" : "lid open"
+            ? "no display"
+            : "\(status.displays) display\(status.displays == 1 ? "" : "s")"
+        let lid = status.lidClosed ? "closed" : "open"
         let power = status.onBattery ? "battery" : "AC power"
         setInfoTitle(contextItem, "\(displays) · \(lid) · \(power)")
 

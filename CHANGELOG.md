@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the place that carries the meaning: a lit screen means the Mac keeps running
   with the lid shut, an empty one means it will sleep. A warning triangle means
   the watcher has stopped.
+- **Compact menu.** Mode explanations are tooltips rather than inline subtitles,
+  and hidden warnings carry no title — `isHidden` stops an item drawing but
+  AppKit still measures it, so hidden text was padding the menu's width.
 - **Open at Login** toggle using `SMAppService` on macOS 13+, falling back to a
   LaunchAgent when registration is refused for a locally built app.
 - **`clamshell json`** for machine-readable status.

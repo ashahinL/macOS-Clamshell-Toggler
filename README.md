@@ -16,12 +16,11 @@ a bag still sleeps like it always did.
 ```
 ┌──────────────────────────────────────┐
 │  Lid closed → stays awake            │
-│  1 external display · lid closed ·   │
-│  battery                             │
+│  1 display · closed · battery        │
 │ ──────────────────────────────────── │
-│ ✓ Automatic     Awake only w/ display│
-│   Always Awake  Even with no display │
-│   Off           Normal macOS sleep   │
+│ ✓ Automatic                          │
+│   Always Awake                       │
+│   Off                                │
 │ ──────────────────────────────────── │
 │ ✓ Open at Login                      │
 │   Open Log                           │
@@ -29,7 +28,8 @@ a bag still sleeps like it always did.
 └──────────────────────────────────────┘
 ```
 
-The menu bar icon is a laptop whose screen carries the state: **lit** when the
+Each mode explains itself on hover. The menu bar icon is a laptop whose screen
+carries the state: **lit** when the
 Mac keeps running with the lid shut, **empty** when closing the lid will put it
 to sleep, and a warning triangle if the watcher has stopped.
 
