@@ -98,8 +98,8 @@ In practice that means it fires only in `on` mode with no monitor — the headle
 case. With a monitor attached macOS blanks the internal panel itself (measured),
 and in `auto` mode with no monitor the machine simply sleeps.
 
-Turn it off with `clamshell blank off` if you need the panel lit behind a closed
-lid.
+If you need the panel lit behind a closed lid, `clamshell screen on` keeps it
+that way.
 
 ### Detecting an external display
 
@@ -148,14 +148,14 @@ LaunchAgent at `~/Library/LaunchAgents/local.clamshell.menubar.plist`.
 ## Usage
 
 Click the menu bar icon to see the current state and switch modes. The command
-line does the same and a little more — screen blanking is CLI-only:
+line does the same and a little more — the screen setting is CLI-only:
 
 ```sh
 clamshell            # status
 clamshell auto       # awake with lid closed, only while a display is attached
 clamshell on         # awake with lid closed, display or not
 clamshell off        # normal macOS behaviour
-clamshell blank off  # keep the built-in screen lit behind a closed lid
+clamshell screen on  # keep the built-in screen lit behind a closed lid
 clamshell log        # recent state changes
 clamshell json       # machine-readable status
 ```
@@ -169,7 +169,7 @@ clamshell 1.0.0
   lid                 closed
   power               Battery Power
   sleep disabled      1
-  blank when closed   on
+  screen when closed  off
   watcher             running (pid 6108)
   mode file           /Users/you/.config/clamshell/mode
 
@@ -224,7 +224,7 @@ What it covers:
   all resolve to "let it sleep"
 - **daemon environment** — the watcher starts under `env -i`; the regression
   test for the unbound `$HOME` that once left it crash-looping
-- **blanking** — the built-in screen is only ever slept with the lid shut, no
+- **the built-in screen** — it is only ever slept with the lid shut, no
   monitor attached and the Mac held awake; every other combination must leave
   it alone
 - **installer** — the error log is rotated inside the `bootout`/`bootstrap`
@@ -242,10 +242,10 @@ re-evaluates until the next lid event. Open and close the lid and it sleeps.
 Forcing it would mean calling `pmset sleepnow` behind your back, which is a
 worse surprise than the wait.
 
-**The screen stays lit behind a closed lid.** Blanking only applies with no
-external display attached, since `pmset displaysleepnow` would take a monitor
-down with it. Check `clamshell blank` reads `on`, and `clamshell log` for a
-`display asleep` line. With a monitor attached, macOS handles the internal panel
+**The screen stays lit behind a closed lid.** This only applies with no external
+display attached, since `pmset displaysleepnow` would take a monitor down with
+it. Check `clamshell screen` reads `off`, and look for a `display asleep` line in
+`clamshell log`. With a monitor attached, macOS handles the internal panel
 itself.
 
 **A mode switch takes a moment to take effect.** About a second. The watcher

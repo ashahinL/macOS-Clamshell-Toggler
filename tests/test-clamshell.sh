@@ -90,25 +90,25 @@ else
 	fail=$((fail + 1))
 fi
 
-printf '\n\033[1mblanking the built-in screen\033[0m  (a black screen nobody asked for is the worst outcome)\n\n'
+printf '\n\033[1mthe built-in screen\033[0m  (a black screen nobody asked for is the worst outcome)\n\n'
 
 # maybe_sleep_display is driven directly rather than through the watch loop:
 # --watch demands root, and these cases need the lid, the display count and the
 # preference varied independently. Sourcing with `version` defines every
 # function without starting anything.
-blank_check() { # name expected_calls polls want displays lid_rc pref
+screen_check() { # name expected_calls polls want displays lid_rc pref
 	local name="$1" expect="$2" polls="$3" want="$4" disp="$5" lid="$6" pref="$7" got
 	got="$(
 		set -- version
-		export CLAMSHELL_LOG_FILE="$blank_log"
+		export CLAMSHELL_LOG_FILE="$screen_log"
 		# shellcheck disable=SC1090
 		source "$CLAMSHELL" >/dev/null
 		lid_is_closed() { return "$lid"; }
-		read_blank()    { printf '%s' "$pref"; }
-		pmset()         { printf 'pmset %s\n' "$*" >> "$blank_calls"; return 0; }
-		: > "$blank_calls"
+		read_screen()   { printf '%s' "$pref"; }
+		pmset()         { printf 'pmset %s\n' "$*" >> "$screen_calls"; return 0; }
+		: > "$screen_calls"
 		for ((i = 0; i < polls; i++)); do maybe_sleep_display "$want" "$disp"; done
-		/usr/bin/grep -c displaysleepnow "$blank_calls" 2>/dev/null || true
+		/usr/bin/grep -c displaysleepnow "$screen_calls" 2>/dev/null || true
 	)"
 	got="${got:-0}"
 	if [[ "$got" == "$expect" ]]; then
@@ -120,19 +120,22 @@ blank_check() { # name expected_calls polls want displays lid_rc pref
 	fi
 }
 
-blank_log="$(mktemp)"
-blank_calls="$(mktemp)"
+screen_log="$(mktemp)"
+screen_calls="$(mktemp)"
 
-#           name                                       calls polls want disp lid pref
-blank_check 'on + lid shut + no monitor  → screen off'     1     2    1    0   0  on
-blank_check 'stays off, re-armed not spammed'              1    10    1    0   0  on
-blank_check 'one closed sample alone     → left alone'     0     1    1    0   0  on
-blank_check 'monitor attached            → left alone'     0     5    1    1   0  on
-blank_check 'mac not held awake          → left alone'     0     5    0    0   0  on
-blank_check 'lid open                    → left alone'     0     5    1    0   1  on
-blank_check 'blanking turned off         → left alone'     0     5    1    0   1  off
+# pref: `off` = screen goes dark when the lid shuts (default), `on` = stays lit.
+#            name                                       calls polls want disp lid pref
+screen_check 'lid shut, no monitor       → screen off'     1     2    1    0   0  off
+screen_check 'stays off, re-armed not spammed'             1    10    1    0   0  off
+screen_check 'one closed sample alone    → left alone'     0     1    1    0   0  off
+screen_check 'monitor attached           → left alone'     0     5    1    1   0  off
+screen_check 'mac not held awake         → left alone'     0     5    0    0   0  off
+screen_check 'lid open                   → left alone'     0     5    1    0   1  off
+# Deliberately lid-CLOSED: with the lid open this would pass on the lid check
+# alone and never exercise the preference at all.
+screen_check 'user asked to keep it lit  → left alone'     0     5    1    0   0  on
 
-rm -f "$blank_log" "$blank_calls"
+rm -f "$screen_log" "$screen_calls"
 
 printf '\n\033[1minstaller\033[0m\n\n'
 

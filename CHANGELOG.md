@@ -20,10 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   on. Guarded so it can only fire when nothing can be looking at a screen: the
   Mac must be held awake by clamshell, there must be **zero** external displays,
   and a single stray "closed" sample is not enough.
-- **`clamshell blank [on|off]`** to control that, defaulting to `on`. Stored
+- **`clamshell screen [on|off]`** to control that: `off` (the default) means the
+  built-in screen goes dark once the lid is shut, `on` keeps it lit. Stored
   beside the mode file, so it needs no sudo either.
-- **`blankWhenClosed` and `internalPanelOn` in `clamshell json`**, plus
-  `blank when closed` and `built-in screen` lines in `clamshell status`.
+- **`screenWhenClosed` and `internalPanelOn` in `clamshell json`**, plus
+  `screen when closed` and `built-in screen` lines in `clamshell status`.
   `internalPanelOn` is a tri-state — `null` when the panel state cannot be read,
   since "cannot tell" must not be reported as "off".
 
