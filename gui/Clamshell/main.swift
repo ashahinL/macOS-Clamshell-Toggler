@@ -163,10 +163,12 @@ enum LoginItem {
 
 // MARK: - Icon
 
-/// A closed MacBook, drawn rather than borrowed from SF Symbols — there is no
-/// stock symbol for a shut lid, which is the one thing this app is about.
-/// Filled means "closing the lid keeps this Mac awake".
-enum LidIcon {
+/// A laptop, drawn rather than borrowed from SF Symbols so the two states can
+/// differ in the one place that carries the meaning: the screen.
+///
+/// A lit (filled) screen means the machine keeps running with the lid shut; an
+/// empty one means closing the lid will put it to sleep.
+enum LaptopIcon {
     enum State {
         case awake, asleep, warning
     }
@@ -179,44 +181,37 @@ enum LidIcon {
             return image ?? NSImage()
         }
 
-        let size = NSSize(width: 18, height: 13)
-        let filled = (state == .awake)
+        let size = NSSize(width: 18, height: 14)
+        let lit = (state == .awake)
 
         let image = NSImage(size: size, flipped: false) { _ in
             NSColor.black.set()
 
-            // The closed machine: one thin slab with the lid seam across it.
-            let body = NSBezierPath(
-                roundedRect: NSRect(x: 1.5, y: 3.8, width: 15.0, height: 4.4),
-                xRadius: 1.3, yRadius: 1.3
+            // Screen: heavy bezel, either lit through or empty.
+            let screen = NSBezierPath(
+                roundedRect: NSRect(x: 2.7, y: 5.0, width: 12.6, height: 7.6),
+                xRadius: 1.1, yRadius: 1.1
             )
-            let seam = NSBezierPath()
-            seam.move(to: NSPoint(x: 2.6, y: 6.0))
-            seam.line(to: NSPoint(x: 15.4, y: 6.0))
-
-            if filled {
-                body.fill()
-                // Punch the seam out of the solid slab so it still reads as a
-                // laptop rather than a plain block.
-                NSGraphicsContext.current?.compositingOperation = .clear
-                seam.lineWidth = 0.9
-                seam.stroke()
-                NSGraphicsContext.current?.compositingOperation = .sourceOver
+            if lit {
+                screen.fill()
             } else {
-                body.lineWidth = 1.2
-                body.stroke()
-                seam.lineWidth = 0.9
-                seam.stroke()
+                screen.lineWidth = 1.4
+                screen.stroke()
             }
 
-            // The desk it sits on, so the shape reads as a laptop and not a box.
-            NSColor.black.set()
-            let desk = NSBezierPath()
-            desk.move(to: NSPoint(x: 0.5, y: 2.2))
-            desk.line(to: NSPoint(x: 17.5, y: 2.2))
-            desk.lineWidth = 1.1
-            desk.lineCapStyle = .round
-            desk.stroke()
+            // Base, foreshortened: the deck tapering out to the front edge.
+            let deck = NSBezierPath()
+            deck.move(to: NSPoint(x: 2.9, y: 4.9))
+            deck.line(to: NSPoint(x: 15.1, y: 4.9))
+            deck.line(to: NSPoint(x: 17.0, y: 3.1))
+            deck.line(to: NSPoint(x: 1.0, y: 3.1))
+            deck.close()
+            deck.fill()
+
+            NSBezierPath(
+                roundedRect: NSRect(x: 0.6, y: 2.0, width: 16.8, height: 1.6),
+                xRadius: 0.8, yRadius: 0.8
+            ).fill()
 
             return true
         }
@@ -275,7 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateIcon() {
         guard let button = statusItem.button else { return }
 
-        let state: LidIcon.State
+        let state: LaptopIcon.State
         let description: String
 
         if !CLI.isInstalled {
@@ -292,7 +287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             description = "Lid closed sends this Mac to sleep"
         }
 
-        button.image = LidIcon.image(for: state)
+        button.image = LaptopIcon.image(for: state)
         button.toolTip = description
     }
 

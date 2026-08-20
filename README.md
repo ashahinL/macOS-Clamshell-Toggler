@@ -29,9 +29,9 @@ a bag still sleeps like it always did.
 └──────────────────────────────────────┘
 ```
 
-The menu bar icon is a closed MacBook: **solid** when closing the lid will keep
-the Mac awake, **outlined** when it will sleep, and a warning triangle if the
-watcher has stopped.
+The menu bar icon is a laptop whose screen carries the state: **lit** when the
+Mac keeps running with the lid shut, **empty** when closing the lid will put it
+to sleep, and a warning triangle if the watcher has stopped.
 
 ## Features
 
@@ -57,8 +57,14 @@ external display attached?
         └── no  ──►  pmset -b disablesleep 0   ──►  lid closed = sleeps (normal)
 ```
 
-A small root daemon polls every 10 seconds and flips the flag when the state
-changes. `-b` scopes the change to battery power, so behaviour on AC is untouched.
+A small root daemon flips the flag whenever the state changes. `-b` scopes the
+change to battery power, so behaviour on AC is untouched.
+
+The two inputs are polled at different rates, because they have different
+urgency. The chosen mode is re-read **every second** — a mode switch is a
+deliberate act and you may close the lid straight afterwards, so a stale flag
+would look like the switch had failed. Displays are re-probed **every five
+seconds**, since that probe costs ~23 ms and nothing races it.
 
 ### Detecting an external display
 
@@ -184,6 +190,10 @@ fail-safe  (unknown state must never keep the Mac awake)
   ok   missing mode file        → auto
   ok   garbage mode file        → auto
   ok   ioreg failure + auto     → sleep
+
+daemon environment  (launchd supplies PATH and nothing else)
+
+  ok   starts with no HOME in the environment
 ```
 
 ## Troubleshooting
