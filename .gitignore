@@ -19,3 +19,6 @@ AGENT_CONTEXT.md
 *~
 .vscode/
 .idea/
+
+# Local agent context, not for the repo
+CLAUDE.md

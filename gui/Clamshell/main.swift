@@ -337,10 +337,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         logItem.isEnabled = true
         menu.addItem(logItem)
 
-        let quitItem = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)),
+        // Routed through our own selector rather than NSApplication.terminate:.
+        // macOS decorates the standard action with an icon, and an icon on any
+        // item reserves an icon column for its whole section — which indents
+        // every neighbouring row and leaves them out of line with the modes
+        // above. Every item in this menu must stay icon-free to line up.
+        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitApp),
                                   keyEquivalent: "q")
+        quitItem.target = self
         quitItem.isEnabled = true
         menu.addItem(quitItem)
+
+        // Belt and braces: nothing here should carry an image.
+        for item in menu.items where item.image != nil {
+            item.image = nil
+        }
 
         return menu
     }
@@ -496,6 +507,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             LoginItem.setEnabled(wanted)
             DispatchQueue.main.async { [weak self] in self?.apply() }
         }
+    }
+
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
     }
 
     @objc private func openLog() {
