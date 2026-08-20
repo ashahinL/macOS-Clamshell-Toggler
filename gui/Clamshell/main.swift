@@ -228,12 +228,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var timer: Timer?
     private var status: Status?
 
+    /// Status is read by spawning the CLI, so it happens off the main thread.
+    /// A menu that blocks on a subprocess while it is opening visibly hitches.
+    private let probe = DispatchQueue(label: "local.clamshell.probe", qos: .utility)
+
+    // Built once and then only updated. Rebuilding a live NSMenu makes it
+    // resize under the cursor, so the item set has to stay fixed.
+    private var headlineItem: NSMenuItem!
+    private var contextItem: NSMenuItem!
+    private var watcherWarning: NSMenuItem!
+    private var drainWarning: NSMenuItem!
+    private var approvalWarning: NSMenuItem!
+    private var loginToggle: NSMenuItem!
+    private var modeItems: [String: NSMenuItem] = [:]
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.menu = NSMenu()
+        statusItem.menu = buildMenu()
         statusItem.menu?.delegate = self
 
-        refresh()
+        // One blocking read at launch so the first open is already correct.
+        status = CLI.status()
+        apply()
 
         // Deliberately on .common rather than the default run loop mode: while
         // a menu is open AppKit runs in event-tracking mode, and a plain
@@ -250,21 +266,170 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         timer?.invalidate()
     }
 
-    /// Rebuild before the menu is laid out, so it is never stale on open.
-    ///
-    /// This has to be `menuNeedsUpdate` and not `menuWillOpen`: the latter runs
-    /// after AppKit has already sized and laid out the items, so edits made
-    /// there may not show until the next time the menu is opened.
+    /// Called before the menu is laid out. Applies what is already known, then
+    /// kicks off a refresh — no structural change, so nothing resizes.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        apply()
         refresh()
+    }
+
+    // MARK: Construction
+
+    private func buildMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        headlineItem = infoItem("", bold: true)
+        contextItem = infoItem("")
+        menu.addItem(headlineItem)
+        menu.addItem(contextItem)
+
+        watcherWarning = infoItem("⚠︎ Watcher not running — run: sudo make install")
+        drainWarning = infoItem("⚠︎ Awake with no display — will drain battery")
+        for item in [watcherWarning!, drainWarning!] {
+            item.isHidden = true
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+
+        for (mode, title, subtitle) in [
+            ("auto", "Automatic", "Awake only with a display"),
+            ("on", "Always Awake", "Even with no display"),
+            ("off", "Off", "Normal macOS sleep"),
+        ] {
+            let item = NSMenuItem(title: title, action: #selector(selectMode(_:)), keyEquivalent: "")
+            item.target = self
+            item.isEnabled = true
+            item.representedObject = mode
+
+            let attributed = NSMutableAttributedString(
+                string: title,
+                attributes: [.font: NSFont.menuFont(ofSize: 0)]
+            )
+            attributed.append(NSAttributedString(
+                string: "  \(subtitle)",
+                attributes: [
+                    .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]
+            ))
+            item.attributedTitle = attributed
+
+            modeItems[mode] = item
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+
+        loginToggle = NSMenuItem(title: "Open at Login",
+                                 action: #selector(toggleLoginItem(_:)), keyEquivalent: "")
+        loginToggle.target = self
+        loginToggle.isEnabled = true
+        menu.addItem(loginToggle)
+
+        approvalWarning = infoItem("⚠︎ Approve in System Settings → Login Items")
+        approvalWarning.isHidden = true
+        menu.addItem(approvalWarning)
+
+        let logItem = NSMenuItem(title: "Open Log", action: #selector(openLog), keyEquivalent: "")
+        logItem.target = self
+        logItem.isEnabled = true
+        menu.addItem(logItem)
+
+        let quitItem = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)),
+                                  keyEquivalent: "q")
+        quitItem.isEnabled = true
+        menu.addItem(quitItem)
+
+        return menu
+    }
+
+    private func infoItem(_ text: String, bold: Bool = false) -> NSMenuItem {
+        let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        setInfoTitle(item, text, bold: bold)
+        return item
+    }
+
+    /// Only touches the item when the text actually changed — re-setting an
+    /// attributed title forces AppKit to re-measure, and re-measuring a menu
+    /// that is on screen is what makes it jump.
+    private func setInfoTitle(_ item: NSMenuItem, _ text: String, bold: Bool = false) {
+        guard item.title != text || item.attributedTitle == nil else { return }
+        item.title = text
+        let font = bold
+            ? NSFont.boldSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize)
+            : NSFont.menuFont(ofSize: NSFont.smallSystemFontSize)
+        item.attributedTitle = NSAttributedString(
+            string: text,
+            attributes: [
+                .font: font,
+                .foregroundColor: bold ? NSColor.labelColor : NSColor.secondaryLabelColor,
+            ]
+        )
+    }
+
+    private func setHidden(_ item: NSMenuItem, _ hidden: Bool) {
+        if item.isHidden != hidden { item.isHidden = hidden }
     }
 
     // MARK: State
 
     private func refresh() {
-        status = CLI.status()
+        probe.async { [weak self] in
+            let fresh = CLI.status()
+            DispatchQueue.main.async {
+                self?.status = fresh
+                self?.apply()
+            }
+        }
+    }
+
+    /// Push current state into the existing items. Never adds or removes any.
+    private func apply() {
         updateIcon()
-        rebuildMenu()
+
+        let loginOn = LoginItem.isEnabled
+        loginToggle.state = loginOn ? .on : .off
+        setHidden(approvalWarning, !LoginItem.needsApproval)
+
+        guard CLI.isInstalled else {
+            setInfoTitle(headlineItem, "clamshell CLI not found", bold: true)
+            setInfoTitle(contextItem, "Run: sudo make install")
+            setHidden(watcherWarning, true)
+            setHidden(drainWarning, true)
+            modeItems.values.forEach { $0.state = .off; $0.isEnabled = false }
+            return
+        }
+
+        guard let status else {
+            setInfoTitle(headlineItem, "Unable to read status", bold: true)
+            setInfoTitle(contextItem, "clamshell json returned nothing")
+            setHidden(watcherWarning, true)
+            setHidden(drainWarning, true)
+            modeItems.values.forEach { $0.state = .off; $0.isEnabled = false }
+            return
+        }
+
+        setInfoTitle(headlineItem,
+                     status.sleepDisabled ? "Lid closed → stays awake" : "Lid closed → sleeps",
+                     bold: true)
+
+        let displays = status.displays == 0
+            ? "No external display"
+            : "\(status.displays) external display\(status.displays == 1 ? "" : "s")"
+        let lid = status.lidClosed ? "lid closed" : "lid open"
+        let power = status.onBattery ? "battery" : "AC power"
+        setInfoTitle(contextItem, "\(displays) · \(lid) · \(power)")
+
+        setHidden(watcherWarning, status.watcherRunning)
+        setHidden(drainWarning, !(status.mode == "on" && status.displays == 0))
+
+        for (mode, item) in modeItems {
+            item.isEnabled = true
+            item.state = (mode == status.mode) ? .on : .off
+        }
     }
 
     private func updateIcon() {
@@ -291,146 +456,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.toolTip = description
     }
 
-    private func rebuildMenu() {
-        let menu = statusItem.menu ?? NSMenu()
-        menu.removeAllItems()
-
-        guard CLI.isInstalled else {
-            addInfo(to: menu, "clamshell CLI not found", bold: true)
-            addInfo(to: menu, "Run: sudo make install")
-            menu.addItem(.separator())
-            addLoginItemToggle(to: menu)
-            addQuit(to: menu)
-            return
-        }
-
-        guard let status else {
-            addInfo(to: menu, "Unable to read status", bold: true)
-            menu.addItem(.separator())
-            addLoginItemToggle(to: menu)
-            addQuit(to: menu)
-            return
-        }
-
-        // Headline: the one thing the user actually wants to know.
-        let headline = status.sleepDisabled
-            ? "Lid closed → stays awake"
-            : "Lid closed → sleeps"
-        addInfo(to: menu, headline, bold: true)
-
-        let displayText = status.displays == 0
-            ? "No external display"
-            : "\(status.displays) external display\(status.displays == 1 ? "" : "s")"
-        let power = status.onBattery ? "battery" : "AC power"
-        addInfo(to: menu, "\(displayText) · \(status.lidClosed ? "lid closed" : "lid open") · \(power)")
-
-        if !status.watcherRunning {
-            addInfo(to: menu, "⚠︎ Watcher not running — run: sudo make install")
-        }
-        if status.mode == "on" && status.displays == 0 {
-            addInfo(to: menu, "⚠︎ Awake with no display — will drain battery")
-        }
-
-        menu.addItem(.separator())
-
-        addModeItem(to: menu, title: "Automatic", subtitle: "Awake only with a display",
-                    mode: "auto", current: status.mode)
-        addModeItem(to: menu, title: "Always Awake", subtitle: "Even with no display",
-                    mode: "on", current: status.mode)
-        addModeItem(to: menu, title: "Off", subtitle: "Normal macOS sleep",
-                    mode: "off", current: status.mode)
-
-        menu.addItem(.separator())
-
-        addLoginItemToggle(to: menu)
-
-        let logItem = NSMenuItem(title: "Open Log", action: #selector(openLog), keyEquivalent: "")
-        logItem.target = self
-        menu.addItem(logItem)
-
-        addQuit(to: menu)
-    }
-
-    // MARK: Menu builders
-
-    private func addInfo(to menu: NSMenu, _ text: String, bold: Bool = false) {
-        let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        let font = bold
-            ? NSFont.menuBarFont(ofSize: 0)
-            : NSFont.menuFont(ofSize: NSFont.smallSystemFontSize)
-        item.attributedTitle = NSAttributedString(
-            string: text,
-            attributes: [
-                .font: bold ? NSFont.boldSystemFont(ofSize: font.pointSize) : font,
-                .foregroundColor: bold ? NSColor.labelColor : NSColor.secondaryLabelColor,
-            ]
-        )
-        menu.addItem(item)
-    }
-
-    private func addModeItem(to menu: NSMenu, title: String, subtitle: String,
-                             mode: String, current: String) {
-        let item = NSMenuItem(title: title, action: #selector(selectMode(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = mode
-        item.state = (mode == current) ? .on : .off
-
-        let attributed = NSMutableAttributedString(
-            string: title,
-            attributes: [.font: NSFont.menuFont(ofSize: 0)]
-        )
-        attributed.append(NSAttributedString(
-            string: "  \(subtitle)",
-            attributes: [
-                .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
-                .foregroundColor: NSColor.secondaryLabelColor,
-            ]
-        ))
-        item.attributedTitle = attributed
-
-        menu.addItem(item)
-    }
-
-    private func addLoginItemToggle(to menu: NSMenu) {
-        let item = NSMenuItem(title: "Open at Login",
-                              action: #selector(toggleLoginItem(_:)), keyEquivalent: "")
-        item.target = self
-        item.state = LoginItem.isEnabled ? .on : .off
-        menu.addItem(item)
-
-        if LoginItem.needsApproval {
-            addInfo(to: menu, "⚠︎ Approve in System Settings → Login Items")
-        }
-    }
-
-    private func addQuit(to menu: NSMenu) {
-        let item = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)),
-                              keyEquivalent: "q")
-        menu.addItem(item)
-    }
-
     // MARK: Actions
 
     @objc private func selectMode(_ sender: NSMenuItem) {
         guard let mode = sender.representedObject as? String else { return }
-        CLI.setMode(mode)
-        refresh()
 
-        // The mode file changes at once, but the headline reflects the flag the
-        // watcher actually applied — which lands about a second later. Poll
-        // across that window so the icon and headline settle without waiting
-        // for the next tick.
-        for delay in [0.3, 0.8, 1.5, 2.5] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.refresh()
+        // Move the tick immediately; the watcher confirms a beat later.
+        for (key, item) in modeItems { item.state = (key == mode) ? .on : .off }
+
+        probe.async { [weak self] in
+            CLI.setMode(mode)
+            // The mode file changes at once, but the headline reflects the flag
+            // the watcher actually applied, which lands about a second later.
+            for delay in [0.0, 0.4, 1.0, 2.0] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    self?.refresh()
+                }
             }
         }
     }
 
     @objc private func toggleLoginItem(_ sender: NSMenuItem) {
-        LoginItem.setEnabled(!LoginItem.isEnabled)
-        refresh()
+        let wanted = !LoginItem.isEnabled
+        sender.state = wanted ? .on : .off
+        probe.async {
+            LoginItem.setEnabled(wanted)
+            DispatchQueue.main.async { [weak self] in self?.apply() }
+        }
     }
 
     @objc private func openLog() {
