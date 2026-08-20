@@ -11,6 +11,8 @@ readonly LABEL='local.clamshell'
 readonly PLIST="/Library/LaunchDaemons/${LABEL}.plist"
 readonly BIN='/usr/local/bin/clamshell'
 readonly UNINSTALL_BIN='/usr/local/bin/clamshell-uninstall'
+readonly ERR_LOG='/var/log/clamshell.err'          # plist StandardErrorPath
+readonly ERR_LOG_PREV="${ERR_LOG}.prev"
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO
@@ -59,6 +61,26 @@ plutil -lint "$PLIST" >/dev/null || die 'generated plist is malformed'
 
 say 'loading daemon'
 launchctl bootout "system/$LABEL" 2>/dev/null || true
+
+# Start the new daemon against an empty error log.
+#
+# Errors from a version that has just been replaced read as live failures — a
+# stale "HOME: unbound variable" from an already-fixed crash loop looked like a
+# fresh one and cost real time to dismiss. launchd holds StandardErrorPath open,
+# so this has to happen while nothing is bootstrapped: after bootout, before
+# bootstrap.
+#
+# Rotated rather than deleted, one generation deep. Someone reinstalling to fix
+# a problem should not have the evidence of that problem thrown away.
+if [[ -s "$ERR_LOG" ]]; then
+	say "rotating $ERR_LOG"
+	mv -f "$ERR_LOG" "$ERR_LOG_PREV"
+	echo "    previous contents kept at $ERR_LOG_PREV"
+fi
+: > "$ERR_LOG"
+chown root:wheel "$ERR_LOG"
+chmod 644 "$ERR_LOG"
+
 launchctl bootstrap system "$PLIST"
 
 say 'waiting for first poll'
@@ -79,7 +101,7 @@ elif [[ "$displays" == '0' ]]; then
 	echo '    Plug in a monitor and re-run `clamshell status` to verify.'
 else
 	warn 'a display is attached but SleepDisabled did not flip.'
-	echo '    Check /var/log/clamshell.err and /var/log/clamshell.log'
+	echo "    Check $ERR_LOG and /var/log/clamshell.log"
 fi
 echo
 echo "Uninstall any time with:  sudo clamshell-uninstall"

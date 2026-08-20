@@ -134,6 +134,49 @@ blank_check 'blanking turned off         → left alone'     0     5    1    0  
 
 rm -f "$blank_log" "$blank_calls"
 
+printf '\n\033[1minstaller\033[0m\n\n'
+
+# The error log is rotated so a reinstall does not present stale failures as
+# live ones. It has to happen in the window where nothing holds the file open:
+# launchd owns StandardErrorPath, so truncating after `bootstrap` would race the
+# daemon it just started. Assert the ordering, since a later edit could move it
+# without anything else noticing.
+inst="$REPO/scripts/install.sh"
+line_of() { /usr/bin/grep -n "$1" "$inst" | head -1 | cut -d: -f1; }
+n_bootout="$(line_of 'launchctl bootout')"
+n_rotate="$(line_of 'mv -f "\$ERR_LOG"')"
+n_bootstrap="$(line_of 'launchctl bootstrap')"
+
+if [[ -n "$n_bootout" && -n "$n_rotate" && -n "$n_bootstrap" ]] &&
+   (( n_bootout < n_rotate && n_rotate < n_bootstrap )); then
+	printf '  \033[32mok\033[0m   error log is rotated between bootout and bootstrap\n'
+	pass=$((pass + 1))
+else
+	printf '  \033[31mFAIL\033[0m error log rotation is outside the bootout/bootstrap window\n'
+	printf '       bootout=%s rotate=%s bootstrap=%s\n' \
+		"${n_bootout:-?}" "${n_rotate:-?}" "${n_bootstrap:-?}"
+	fail=$((fail + 1))
+fi
+
+# Rotate, do not delete: reinstalling to fix a problem must not destroy the
+# evidence of it.
+if /usr/bin/grep -q 'ERR_LOG_PREV' "$inst" && ! /usr/bin/grep -q 'rm -f "\$ERR_LOG"' "$inst"; then
+	printf '  \033[32mok\033[0m   previous error log is kept, not deleted\n'
+	pass=$((pass + 1))
+else
+	printf '  \033[31mFAIL\033[0m previous error log is not preserved\n'
+	fail=$((fail + 1))
+fi
+
+# ...and the uninstaller has to take the rotated copy with it.
+if /usr/bin/grep -q 'clamshell.err.prev' "$REPO/scripts/uninstall.sh"; then
+	printf '  \033[32mok\033[0m   uninstall removes the rotated log too\n'
+	pass=$((pass + 1))
+else
+	printf '  \033[31mFAIL\033[0m uninstall leaves clamshell.err.prev behind\n'
+	fail=$((fail + 1))
+fi
+
 printf '\n\033[1msyntax\033[0m\n\n'
 for f in "$REPO"/bin/clamshell "$REPO"/scripts/*.sh "$REPO"/tests/*.sh; do
 	if bash -n "$f" 2>/dev/null; then

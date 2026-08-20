@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `blank when closed` line in `clamshell status`.
 
 ### Changed
+- **A reinstall now starts against an empty error log.** Errors left by a
+  version that has just been replaced read as live failures — a stale
+  `HOME: unbound variable` from an already-fixed crash loop looked like a fresh
+  one. The installer rotates `/var/log/clamshell.err` to `.err.prev` between
+  `bootout` and `bootstrap`, the only window where launchd does not hold the
+  file open. Rotated rather than deleted, one generation deep, so reinstalling
+  to fix a problem does not throw away the evidence of it.
 - The watch loop probes displays once per poll and passes the count down, so
   adding the blanking check costs one extra `ioreg` rather than three.
 - `CLAMSHELL_LOG_FILE` overrides the log path. A redirection bash cannot open

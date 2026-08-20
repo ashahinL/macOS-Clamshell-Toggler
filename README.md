@@ -267,6 +267,10 @@ clamshell log
 cat /var/log/clamshell.err
 ```
 
+`clamshell.err` is emptied on every install, so anything in it happened under
+the version you are running now. The previous contents are kept one generation
+deep at `/var/log/clamshell.err.prev`.
+
 **`clamshell status` says the watcher is not running.** Re-run `sudo make install`,
 or load it manually:
 

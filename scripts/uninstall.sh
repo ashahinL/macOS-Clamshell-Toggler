@@ -20,7 +20,7 @@ launchctl bootout "system/$LABEL" 2>/dev/null || true
 
 say 'removing files'
 rm -f "$PLIST" /usr/local/bin/clamshell /usr/local/bin/clamshell-uninstall
-rm -f /var/log/clamshell.log /var/log/clamshell.err
+rm -f /var/log/clamshell.log /var/log/clamshell.err /var/log/clamshell.err.prev
 
 say 'restoring sleep behaviour'
 pmset -b disablesleep 0 || true
