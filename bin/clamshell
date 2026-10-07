@@ -254,6 +254,20 @@ maybe_sleep_display() {
 	fi
 }
 
+# Make the live flag match $1. Checked against what pmset reports, not against
+# what this loop last wrote: the flag is one global key, other tools write it
+# too (AlDente resets it when its helper restarts), and a cached value never
+# notices — the Mac then sleeps on lid close with the mode still saying `on`.
+apply_sleep_flag() {
+	local want="$1" displays="$2"
+	[[ "$(sleep_disabled)" == "$want" ]] && return 0
+	if pmset -b disablesleep "$want" 2>>"$LOG_FILE"; then
+		printf '%s mode=%s displays=%s disablesleep=%s\n' \
+			"$(date '+%Y-%m-%d %H:%M:%S')" "$(read_mode)" \
+			"$displays" "$want" >> "$LOG_FILE"
+	fi
+}
+
 cmd_watch() {
 	[[ $EUID -eq 0 ]] || die "--watch must run as root (it is started by launchd)"
 
@@ -266,7 +280,7 @@ cmd_watch() {
 	#
 	# Display changes are not raced against anything in the same way, and
 	# probing costs ~23ms of ioreg, so that stays on the slower cadence.
-	local prev='' want stamp='' new_stamp countdown=0 displays
+	local want stamp='' new_stamp countdown=0 displays
 
 	while :; do
 		new_stamp="$(mode_stamp)"
@@ -280,15 +294,7 @@ cmd_watch() {
 			displays=$(external_displays)
 			want=$(want_for_displays "$displays")
 
-			if [[ "$want" != "$prev" ]]; then
-				if pmset -b disablesleep "$want" 2>>"$LOG_FILE"; then
-					printf '%s mode=%s displays=%s disablesleep=%s\n' \
-						"$(date '+%Y-%m-%d %H:%M:%S')" "$(read_mode)" \
-						"$displays" "$want" >> "$LOG_FILE"
-					prev="$want"
-				fi
-			fi
-
+			apply_sleep_flag "$want" "$displays"
 			maybe_sleep_display "$want" "$displays"
 		fi
 

@@ -137,6 +137,42 @@ screen_check 'user asked to keep it lit  → left alone'     0     5    1    0  
 
 rm -f "$screen_log" "$screen_calls"
 
+printf '\n\033[1mthe sleep flag\033[0m  (other tools write it too)\n\n'
+
+# Same sourcing trick as above. `live` is what pmset reports right now.
+flag_check() { # name expected_writes want live
+	local name="$1" expect="$2" want="$3" live="$4" got
+	got="$(
+		set -- version
+		export CLAMSHELL_LOG_FILE="$flag_log"
+		# shellcheck disable=SC1090
+		source "$CLAMSHELL" >/dev/null
+		sleep_disabled() { printf '%s' "$live"; }
+		pmset()          { printf 'pmset %s\n' "$*" >> "$flag_calls"; return 0; }
+		: > "$flag_calls"
+		apply_sleep_flag "$want" 0
+		/usr/bin/grep -c "disablesleep $want" "$flag_calls" 2>/dev/null || true
+	)"
+	got="${got:-0}"
+	if [[ "$got" == "$expect" ]]; then
+		printf '  \033[32mok\033[0m   %s\n' "$name"
+		pass=$((pass + 1))
+	else
+		printf '  \033[31mFAIL\033[0m %s — expected %s write(s), got %s\n' "$name" "$expect" "$got"
+		fail=$((fail + 1))
+	fi
+}
+
+flag_log="$(mktemp)"
+flag_calls="$(mktemp)"
+
+#          name                                      writes want live
+flag_check 'reset behind our back      → rewritten'     1     1    0
+flag_check 'already set                → left alone'    0     1    1
+flag_check 'unreadable, want sleep     → written'       1     0    ''
+
+rm -f "$flag_log" "$flag_calls"
+
 printf '\n\033[1minstaller\033[0m\n\n'
 
 # The error log is rotated so a reinstall does not present stale failures as
