@@ -218,6 +218,130 @@ readings_check 'SleepDisabled and low power on   → 1, 1'             '1|1||'  
 readings_check 'SleepDisabled and low power off  → 0, 0'             '0|0||'            ''          "$settings_off"
 readings_check 'pmset prints nothing             → all empty'        '|||'              ''          ''
 
+printf '\n\033[1mbattery floor\033[0m  (a closed Mac must not drain itself flat)\n\n'
+
+expect_eq() { # name expected actual
+	if [[ "$3" == "$2" ]]; then
+		printf '  \033[32mok\033[0m   %s\n' "$1"
+		pass=$((pass + 1))
+	else
+		printf '  \033[31mFAIL\033[0m %s\n       expected: %s\n       got:      %s\n' "$1" "$2" "$3"
+		fail=$((fail + 1))
+	fi
+}
+
+cut_dir="$(mktemp -d)"
+[[ -d "$cut_dir" ]] || { printf 'battery floor: no temp dir\n' >&2; exit 1; }
+
+# Runs maybe_cut `polls` times against a real mode file in a temp dir. pmset
+# and sudo are stubs; sudo still runs the command, as the current user, so the
+# writes really happen. `pct` is a number, or `none` for a line without one.
+cut_run() { # mode source pct floor lid displays polls
+	local mode="$1" src="$2" pct="$3" floor="$4"
+	export cut_lid="$5" cut_disp="$6" cut_polls="$7" cut_src="$src" cut_pct="$pct"
+	rm -f "$cut_dir/mode" "$cut_dir/floor" "$cut_dir/last-cut" "$cut_dir/until"
+	printf '%s\n' "$mode" > "$cut_dir/mode"
+	[[ -z "$floor" ]] || printf '%s\n' "$floor" > "$cut_dir/floor"
+	: > "$cut_dir/log"; : > "$cut_dir/calls"; : > "$cut_dir/batt"
+	(
+		set -- version
+		export CLAMSHELL_MODE_FILE="$cut_dir/mode" CLAMSHELL_LOG_FILE="$cut_dir/log"
+		# shellcheck disable=SC1090
+		source "$CLAMSHELL" >/dev/null
+		lid_is_closed() { return "$cut_lid"; }
+		pmset() {
+			if [[ "${1:-}" == -g && "${2:-}" == batt ]]; then
+				echo x >> "$cut_dir/batt"
+				printf "Now drawing from '%s'\n" "$cut_src"
+				[[ "$cut_pct" == none ]] ||
+					printf ' -InternalBattery-0 (id=1)\t%s%%; discharging; 0:40 remaining present: true\n' "$cut_pct"
+			else
+				printf 'pmset %s\n' "$*" >> "$cut_dir/calls"
+			fi
+		}
+		sudo() { printf 'sudo %s\n' "$*" >> "$cut_dir/calls"; shift 3; "$@"; }
+		for ((i = 0; i < cut_polls; i++)); do maybe_cut "$cut_disp"; done
+	)
+}
+
+# One line: mode, how many floor cuts were logged, the pmset writes in order.
+cut_summary() {
+	printf 'mode=%s cuts=%s pmset=[%s]' \
+		"$(tr -d '[:space:]' < "$cut_dir/mode")" \
+		"$(/usr/bin/grep -c 'cut reason=floor' "$cut_dir/log" || true)" \
+		"$(/usr/bin/grep '^pmset ' "$cut_dir/calls" | sed 's/^pmset //' | paste -sd';' -)"
+}
+
+tripped='mode=off cuts=1 pmset=[-b disablesleep 0;sleepnow]'
+quiet='mode=on cuts=0 pmset=[]'
+
+cut_run on 'Battery Power' 14 '' 0 0 2
+expect_eq 'on, battery 14%, floor 15, 2 polls, lid shut, no monitor → cut, then sleep' "$tripped" "$(cut_summary)"
+expect_eq 'the cut is logged with reason and percent' 1 \
+	"$(/usr/bin/grep -c 'cut reason=floor percent=14$' "$cut_dir/log" || true)"
+last_cut="$(cat "$cut_dir/last-cut" 2>/dev/null)"
+expect_eq 'last-cut records reason, epoch and percent' 1 \
+	"$([[ "$last_cut" =~ ^floor\ [0-9]+\ 14$ ]] && echo 1 || echo 0)"
+expect_eq 'every watcher write ran as the file owner via sudo' 3 \
+	"$(/usr/bin/grep -c "^sudo -n -u #$(id -u) " "$cut_dir/calls" || true)"
+
+cut_run on 'Battery Power' 14 '' 0 0 1
+expect_eq 'one poll under the floor → nothing yet' "$quiet" "$(cut_summary)"
+cut_run on 'Battery Power' 14 off 0 0 5
+expect_eq 'floor off → no cut' "$quiet" "$(cut_summary)"
+cut_run on 'AC Power' 10 '' 0 0 5
+expect_eq 'on AC at 10% → no cut' "$quiet" "$(cut_summary)"
+cut_run auto 'Battery Power' 10 '' 0 0 5
+expect_eq 'auto mode ignores the floor' 'mode=auto cuts=0 pmset=[]' "$(cut_summary)"
+expect_eq 'auto mode does not even read the battery' 0 "$(wc -l < "$cut_dir/batt" | tr -d ' ')"
+cut_run on 'Battery Power' 14 '' 1 0 2
+expect_eq 'lid open → cut, but no sleepnow' 'mode=off cuts=1 pmset=[-b disablesleep 0]' "$(cut_summary)"
+cut_run on 'Battery Power' 14 '' 0 1 2
+expect_eq 'monitor attached → cut, but no sleepnow' 'mode=off cuts=1 pmset=[-b disablesleep 0]' "$(cut_summary)"
+cut_run on 'Battery Power' none '' 0 0 2
+expect_eq 'battery with no percentage → cut (fail-safe)' "$tripped" "$(cut_summary)"
+cut_run on 'Battery Power' 14 banana 0 0 2
+expect_eq 'garbage floor file → treated as 15' "$tripped" "$(cut_summary)"
+cut_run on 'Battery Power' 16 '' 0 0 2
+expect_eq 'above the floor → no cut' "$quiet" "$(cut_summary)"
+
+# read_floor and write_floor, in a temp dir.
+floor_check() { # name expected command...
+	local name="$1" expect="$2"; shift 2
+	local cmd=("$@")   # `set -- version` below replaces $@
+	expect_eq "$name" "$expect" "$(
+		set -- version
+		export CLAMSHELL_MODE_FILE="$cut_dir/mode"
+		# shellcheck disable=SC1090
+		source "$CLAMSHELL" >/dev/null
+		rm -f "$cut_dir/floor"
+		( "${cmd[@]}" ) >/dev/null 2>&1; echo "rc=$? $(read_floor)"
+	)"
+}
+floor_check 'floor 3 is clamped up to 5'    'rc=0 5'  write_floor 3
+floor_check 'floor 80 is clamped down to 50' 'rc=0 50' write_floor 80
+floor_check 'floor off is stored'           'rc=0 off' write_floor off
+floor_check 'floor x is refused'            'rc=1 15' write_floor x
+floor_check 'no floor file reads as 15'     'rc=0 15' true
+
+# After a cut the mode file may still say `on` (root-owned, sudo broken). The
+# cut has to hold anyway, until the mode file changes.
+held="$(
+	set -- version
+	export CLAMSHELL_MODE_FILE="$cut_dir/mode"
+	# shellcheck disable=SC1090
+	source "$CLAMSHELL" >/dev/null
+	printf 'on\n' > "$cut_dir/mode"
+	CUT_STAMP=$(mode_stamp)
+	if held_by_cut; then a=true; else a=false; fi
+	printf 'auto\n' > "$cut_dir/mode"
+	if held_by_cut; then b=true; else b=false; fi
+	printf '%s %s [%s]' "$a" "$b" "$CUT_STAMP"
+)"
+expect_eq 'a cut holds until the mode file changes' 'true false []' "$held"
+
+rm -rf "$cut_dir"
+
 printf '\n\033[1minstaller\033[0m\n\n'
 
 # The error log is rotated so a reinstall does not present stale failures as

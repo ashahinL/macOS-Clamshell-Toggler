@@ -53,18 +53,19 @@ else
 	MODE_FILE=''   # daemon context: --watch overrides this from argv
 fi
 
-# The screen preference lives beside the mode file. This has to be a function
-# rather than a variable: --watch reassigns MODE_FILE from argv *after* this
-# block has already run, so anything computed here would point at the wrong
-# directory inside the daemon.
-#
+# Config files live beside the mode file. This has to be a function rather than
+# a variable: --watch reassigns MODE_FILE from argv *after* this block has
+# already run, so anything computed here would point at the wrong directory
+# inside the daemon.
+config_path() {
+	[[ -n "$MODE_FILE" ]] || return 1
+	printf '%s/%s' "$(dirname "$MODE_FILE")" "$1"
+}
+
 # Named `screen`, not `blank`: the older name stored the inverse sense, so
 # reading a leftover `blank` file here would turn the setting on its head. A
 # different filename means a stale one is simply ignored.
-screen_file() {
-	[[ -n "$MODE_FILE" ]] || return 1
-	printf '%s/screen' "$(dirname "$MODE_FILE")"
-}
+screen_file() { config_path screen; }
 
 # Filled by read_power_settings and read_battery, once per pass.
 PM_SLEEP_DISABLED=''; PM_LOW_POWER=''; PM_SOURCE=''; PM_PERCENT=''
@@ -98,8 +99,6 @@ read_power_settings() {
 }
 
 read_battery() {
-	# Read by the power readings test; shellcheck only sees this file.
-	# shellcheck disable=SC2034
 	IFS='|' read -r PM_SOURCE PM_PERCENT < <(
 		pmset -g batt 2>/dev/null | awk -v q="'" '
 			NR == 1 && index($0, "Now drawing from " q) {
@@ -198,6 +197,46 @@ write_screen() {
 	esac
 }
 
+# Battery percentage at or below which `on` turns itself off.
+#   off, or an integer 5-50; anything else reads as the default, 15
+read_floor() {
+	local f v=''
+	f="$(config_path floor)" || { printf '15'; return; }
+	# No trailing newline makes read return 1, but v is still set.
+	[[ -r "$f" ]] && { read -r v < "$f" || true; } 2>/dev/null
+	v=${v//[[:space:]]/}
+	if [[ "$v" == off ]]; then
+		printf 'off'
+	elif [[ "$v" =~ ^[0-9]{1,3}$ ]] && (( 10#$v >= 5 && 10#$v <= 50 )); then
+		printf '%s' "$((10#$v))"
+	else
+		printf '15'
+	fi
+}
+
+write_floor() {
+	local v="$1" f dir
+	if [[ "$v" =~ ^[0-9]+$ ]]; then
+		if (( ${#v} > 3 || 10#$v > 50 )); then v=50
+		elif (( 10#$v < 5 )); then v=5
+		else v=$((10#$v))
+		fi
+	elif [[ "$v" != off ]]; then
+		die "floor takes a percentage (5-50) or off"
+	fi
+	f="$(config_path floor)" || die "cannot resolve the config directory"
+	dir="$(dirname "$f")"
+	mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
+	printf '%s\n' "$v" > "$f" 2>/dev/null || die "cannot write $f"
+
+	printf '%sbattery floor → %s%s%s\n' "$C_DIM" "$C_BOLD" "$v" "$C_RESET"
+	if [[ "$v" == off ]]; then
+		printf 'Always Awake no longer turns itself off when the battery runs low.\n'
+	else
+		printf 'Always Awake turns off on battery at %s%% or lower.\n' "$v"
+	fi
+}
+
 # Resolve the mode to the SleepDisabled value it wants, given a display count.
 # `auto` fails safe: anything unexpected means "let the machine sleep".
 want_for_displays() {
@@ -224,6 +263,11 @@ mode_stamp() {
 # Blanking state, carried across polls by cmd_watch.
 BLANK_STREAK=0   # consecutive polls the lid has read closed
 BLANK_LAST=0     # epoch seconds of the last display-sleep call
+
+# Cutoff state, same idea.
+CUT_LID_STREAK=0 # consecutive polls the lid has read closed, while mode is on
+FLOOR_STREAK=0   # consecutive polls on battery at or under the floor
+CUT_STAMP=''     # mode_stamp right after a cut; see held_by_cut
 
 # Sleep the built-in panel when nothing can possibly be looking at it.
 #
@@ -286,6 +330,101 @@ apply_sleep_flag() {
 	fi
 }
 
+# The watcher is root and the config directory belongs to the user, so it must
+# never write there as root: a user could swap a file for a symlink and have
+# root write through it. Every write and delete runs as the mode file's owner.
+owner_uid() {
+	local uid
+	uid=$(stat -f %u "$MODE_FILE" 2>/dev/null) || return 1
+	[[ "$uid" =~ ^[0-9]+$ ]] && (( 10#$uid != 0 )) || return 1
+	printf '%s' "$uid"
+}
+
+write_as_owner() {
+	local f="$1" v="$2" uid
+	uid=$(owner_uid) || return 1
+	sudo -n -u "#$uid" /bin/sh -c 'printf "%s\n" "$1" > "$2"' _ "$v" "$f" 2>>"$LOG_FILE"
+}
+
+remove_as_owner() {
+	local uid
+	uid=$(owner_uid) || return 1
+	sudo -n -u "#$uid" /bin/rm -f "$1" 2>>"$LOG_FILE"
+}
+
+# Turn Always Awake off: $1 is why, $2 the battery percent (may be empty), $3
+# the external display count.
+#
+# The mode file is set to `off`, because leaving it at `on` would have the next
+# poll switch the flag straight back on.
+cut_off() {
+	local reason="$1" percent="$2" displays="$3" f
+
+	write_as_owner "$MODE_FILE" off
+	f=$(config_path until) && remove_as_owner "$f"
+	pmset -b disablesleep 0 2>>"$LOG_FILE"
+	printf '%s cut reason=%s percent=%s\n' \
+		"$(date '+%Y-%m-%d %H:%M:%S')" "$reason" "${percent:-unknown}" >> "$LOG_FILE"
+	f=$(config_path last-cut) &&
+		write_as_owner "$f" "$reason $(date +%s)${percent:+ $percent}"
+
+	# Clearing the flag does not sleep a Mac whose lid is already shut: macOS
+	# decides that when the lid closes. So sleep it ourselves, but only with
+	# nobody there: lid shut on consecutive polls and no monitor attached. The
+	# flag must be cleared first, or sleepnow is ignored.
+	if (( CUT_LID_STREAK >= LID_CONFIRM )) && [[ "$displays" == 0 ]]; then
+		pmset sleepnow 2>>"$LOG_FILE"
+	fi
+
+	CUT_STAMP=$(mode_stamp)
+	FLOOR_STREAK=0
+}
+
+# Has a cutoff already ended this mode? True while the mode file is unchanged
+# since the cut. Covers a failed write of `off` (root-owned file, sudo broken):
+# without it the very next poll would set the flag again.
+held_by_cut() {
+	[[ -n "$CUT_STAMP" ]] || return 1
+	[[ "$CUT_STAMP" == "$(mode_stamp)" ]] && return 0
+	CUT_STAMP=''
+	return 1
+}
+
+# Cutoffs apply only while the mode is `on`; `auto` is someone at a desk.
+# Each one needs LID_CONFIRM polls in a row, so one bad read cannot end a job.
+maybe_cut() {
+	local displays="$1" floor
+
+	if [[ "$(read_mode)" != on ]]; then
+		CUT_LID_STREAK=0
+		FLOOR_STREAK=0
+		return
+	fi
+
+	# Its own counter: BLANK_STREAK also resets on `screen on` and on a monitor.
+	if lid_is_closed; then CUT_LID_STREAK=$(( CUT_LID_STREAK + 1 )); else CUT_LID_STREAK=0; fi
+
+	read_battery
+
+	# (deadline check goes here)
+
+	# An unknown power source never cuts, it could be AC. An unreadable percent
+	# on battery counts as under the floor.
+	floor=$(read_floor)
+	if [[ "$floor" != off && "$PM_SOURCE" == 'Battery Power' ]] &&
+	   { [[ -z "$PM_PERCENT" ]] || (( 10#$PM_PERCENT <= 10#$floor )); }; then
+		FLOOR_STREAK=$(( FLOOR_STREAK + 1 ))
+		if (( FLOOR_STREAK >= LID_CONFIRM )); then
+			cut_off floor "$PM_PERCENT" "$displays"
+			return
+		fi
+	else
+		FLOOR_STREAK=0
+	fi
+
+	# (Low Power Mode check goes here)
+}
+
 cmd_watch() {
 	[[ $EUID -eq 0 ]] || die "--watch must run as root (it is started by launchd)"
 
@@ -310,9 +449,10 @@ cmd_watch() {
 			# Probed once and passed down, so adding the blanking check costs
 			# one extra ioreg per poll rather than three.
 			displays=$(external_displays)
-			want=$(want_for_displays "$displays")
-
 			read_power_settings
+			maybe_cut "$displays"
+			want=$(want_for_displays "$displays")
+			held_by_cut && want=0
 			apply_sleep_flag "$want" "$displays" "$PM_SLEEP_DISABLED"
 			maybe_sleep_display "$want" "$displays"
 		fi
@@ -449,6 +589,12 @@ case "${1:-status}" in
 			on|off) write_screen "$2" ;;
 			'')     printf '%s\n' "$(read_screen)" ;;
 			*)      die "screen takes on or off" ;;
+		esac
+		;;
+	floor)
+		case "${2:-}" in
+			'') printf '%s\n' "$(read_floor)" ;;
+			*)  write_floor "$2" ;;
 		esac
 		;;
 	log)             cmd_log "${2:-20}" ;;
