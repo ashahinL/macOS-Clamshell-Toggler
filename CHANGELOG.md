@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-10-09
+
+### Added
+- **A battery floor.** `clamshell floor [N|off]` turns Always Awake off once the
+  battery is at or below N% on two polls in a row. Default 15%, range 5 to 50.
+  It only applies on battery, so a plugged-in Mac never trips it.
+- **An auto-off timer.** `clamshell timer [off|1h|2h|MIN]` turns Always Awake off
+  a set time after it is switched on. The deadline is a file the root watcher
+  enforces, so quitting the menu app or rebooting does not cancel it.
+- **A Low Power Mode cutoff.** `clamshell lpm on` turns Always Awake off while on
+  battery with Low Power Mode on. It is off by default. Choosing Always Awake
+  while Low Power Mode is already on keeps it awake until Low Power Mode ends.
+- **Sleeping a shut lid when a cutoff fires.** If the lid reads shut on two polls
+  and no external display is attached, the watcher runs `pmset sleepnow`. An open
+  lid or a monitor is left alone.
+- **Menu controls for all of this.** Battery floor and Auto-off submenus, a Low
+  Power Mode checkmark, a countdown row, an armed menu bar icon while Always Awake
+  runs on battery, and a notification when a cutoff turns it off.
+- **New fields in `clamshell json` and `clamshell status`.** Battery percent,
+  floor, timer, Low Power Mode state and the last cutoff are now reported.
+
+### Changed
+- **Fewer `pmset` calls.** `pmset -g` and `pmset -g batt` are each read once per
+  poll. The new cutoffs add no extra calls.
+- **Corrected the AC note.** `-b` does not limit `disablesleep` to battery. On AC,
+  `on` also keeps the Mac awake with the lid shut.
+
+### Security
+- **The watcher writes as the file owner.** Every write and delete in the config
+  folder runs as the owner of the mode file, so a planted symlink cannot make
+  root write through it.
+
+[1.2.0]: https://github.com/ashahinL/macOS-Clamshell-Toggler/releases/tag/v1.2.0
+
 ## [1.1.0] - 2026-08-20
 
 ### Added

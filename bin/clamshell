@@ -12,7 +12,7 @@
 
 set -uo pipefail
 
-readonly VERSION='1.1.0'
+readonly VERSION='1.2.0'
 # Overridable so the tests can exercise the code paths that log. Note that a
 # redirection bash cannot open makes it skip the command entirely, so an
 # unwritable log would silently stop pmset from being called at all.
@@ -53,18 +53,22 @@ else
 	MODE_FILE=''   # daemon context: --watch overrides this from argv
 fi
 
-# The screen preference lives beside the mode file. This has to be a function
-# rather than a variable: --watch reassigns MODE_FILE from argv *after* this
-# block has already run, so anything computed here would point at the wrong
-# directory inside the daemon.
-#
+# Config files live beside the mode file. This has to be a function rather than
+# a variable: --watch reassigns MODE_FILE from argv *after* this block has
+# already run, so anything computed here would point at the wrong directory
+# inside the daemon.
+config_path() {
+	[[ -n "$MODE_FILE" ]] || return 1
+	printf '%s/%s' "$(dirname "$MODE_FILE")" "$1"
+}
+
 # Named `screen`, not `blank`: the older name stored the inverse sense, so
 # reading a leftover `blank` file here would turn the setting on its head. A
 # different filename means a stale one is simply ignored.
-screen_file() {
-	[[ -n "$MODE_FILE" ]] || return 1
-	printf '%s/screen' "$(dirname "$MODE_FILE")"
-}
+screen_file() { config_path screen; }
+
+# Set by read_power_settings and read_battery.
+PM_SLEEP_DISABLED=''; PM_LOW_POWER=''; PM_SOURCE=''; PM_PERCENT=''
 
 # ------------------------------------------------------------------ probes ---
 
@@ -85,12 +89,23 @@ lid_is_closed() {
 		awk '/"AppleClamshellState" = Yes/{f=1} END{exit !f}'
 }
 
-power_source() {
-	pmset -g batt 2>/dev/null | sed -n "1s/Now drawing from //p" | tr -d "'"
+read_power_settings() {
+	IFS='|' read -r PM_SLEEP_DISABLED PM_LOW_POWER < <(
+		pmset -g 2>/dev/null |
+			awk '$1=="SleepDisabled"{s=$2} $1=="lowpowermode"{l=$2} END{print s "|" l}'
+	)
 }
 
-sleep_disabled() {
-	pmset -g 2>/dev/null | awk '/SleepDisabled/{print $2}'
+read_battery() {
+	IFS='|' read -r PM_SOURCE PM_PERCENT < <(
+		pmset -g batt 2>/dev/null | awk -v q="'" '
+			NR == 1 && index($0, "Now drawing from " q) {
+				s = substr($0, index($0, q) + 1)
+				src = substr(s, 1, index(s, q) - 1)
+			}
+			NR == 2 && match($0, /[0-9]+%/) { pct = substr($0, RSTART, RLENGTH - 1) }
+			END { print src "|" pct }'
+	)
 }
 
 watcher_pid() {
@@ -132,11 +147,29 @@ read_mode() {
 }
 
 write_mode() {
-	local mode="$1" dir
+	local mode="$1" dir f
 	dir="$(dirname "$MODE_FILE")"
 	mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
 	printf '%s\n' "$mode" > "$MODE_FILE" 2>/dev/null ||
 		die "cannot write $MODE_FILE"
+
+	# The clock starts now. `auto` and `off` drop any deadline but keep the saved
+	# length, so the next `on` starts a fresh one.
+	if [[ "$mode" == on && "$(read_timer)" != off ]]; then
+		arm_until "$(read_timer)"
+	else
+		f="$(config_path until)" && rm -f "$f"
+	fi
+
+	# Choosing `on` while Low Power Mode is already on means it: hold the check
+	# off for that stretch. Any other write drops a hold so it is never inherited.
+	f="$(config_path lpm-hold)" || die "cannot resolve the config directory"
+	if [[ "$mode" == on && "$(read_lpm)" == on ]] &&
+	   { read_power_settings; [[ "$PM_LOW_POWER" == 1 ]]; }; then
+		: > "$f" 2>/dev/null || die "cannot write $f"
+	else
+		rm -f "$f"
+	fi
 
 	printf '%smode → %s%s%s\n' "$C_DIM" "$C_BOLD" "$mode" "$C_RESET"
 	case "$mode" in
@@ -180,6 +213,164 @@ write_screen() {
 	esac
 }
 
+# Battery percentage at or below which `on` turns itself off.
+#   off, or an integer 5-50; anything else reads as the default, 15
+read_floor() {
+	local f v=''
+	f="$(config_path floor)" || { printf '15'; return; }
+	# No trailing newline makes read return 1, but v is still set.
+	[[ -r "$f" ]] && { read -r v < "$f" || true; } 2>/dev/null
+	v=${v//[[:space:]]/}
+	if [[ "$v" == off ]]; then
+		printf 'off'
+	elif [[ "$v" =~ ^[0-9]{1,3}$ ]] && (( 10#$v >= 5 && 10#$v <= 50 )); then
+		printf '%s' "$((10#$v))"
+	else
+		printf '15'
+	fi
+}
+
+write_floor() {
+	local v="$1" f dir
+	if [[ "$v" =~ ^[0-9]+$ ]]; then
+		if (( ${#v} > 3 || 10#$v > 50 )); then v=50
+		elif (( 10#$v < 5 )); then v=5
+		else v=$((10#$v))
+		fi
+	elif [[ "$v" != off ]]; then
+		die "floor takes a percentage (5-50) or off"
+	fi
+	f="$(config_path floor)" || die "cannot resolve the config directory"
+	dir="$(dirname "$f")"
+	mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
+	printf '%s\n' "$v" > "$f" 2>/dev/null || die "cannot write $f"
+
+	printf '%sbattery floor → %s%s%s\n' "$C_DIM" "$C_BOLD" "$v" "$C_RESET"
+	if [[ "$v" == off ]]; then
+		printf 'Always Awake no longer turns itself off when the battery runs low.\n'
+	else
+		printf 'Always Awake turns off on battery at %s%% or lower.\n' "$v"
+	fi
+}
+
+# Minutes after which `on` turns itself off.
+#   off, or an integer 1-1440; anything else reads as off, so a garbage file can
+#   never invent a deadline
+read_timer() {
+	local f v=''
+	f="$(config_path timer)" || { printf 'off'; return; }
+	[[ -r "$f" ]] && { read -r v < "$f" || true; } 2>/dev/null
+	v=${v//[[:space:]]/}
+	if [[ "$v" =~ ^[0-9]{1,4}$ ]] && (( 10#$v >= 1 && 10#$v <= 1440 )); then
+		printf '%s' "$((10#$v))"
+	else
+		printf 'off'
+	fi
+}
+
+# The deadline, in epoch seconds. Nothing if there is none, `bad` if the file is
+# there but is not a plain number.
+read_until() {
+	local f v=''
+	f="$(config_path until)" || return 0
+	[[ -e "$f" ]] || return 0
+	[[ -r "$f" ]] && { read -r v < "$f" || true; } 2>/dev/null
+	v=${v//[[:space:]]/}
+	if [[ "$v" =~ ^[0-9]{1,15}$ ]]; then printf '%s' "$v"; else printf 'bad'; fi
+}
+
+# CLI side only. Written and renamed, so the watcher never reads half a number.
+arm_until() {
+	local f dir
+	f="$(config_path until)" || die "cannot resolve the config directory"
+	dir="$(dirname "$f")"
+	mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
+	printf '%s\n' "$(( $(date +%s) + 10#$1 * 60 ))" > "$f.tmp" 2>/dev/null ||
+		die "cannot write $f.tmp"
+	mv -f "$f.tmp" "$f" 2>/dev/null || die "cannot write $f"
+}
+
+write_timer() {
+	local v="$1" f dir
+	case "$v" in
+		off) ;;
+		1h)  v=60 ;;
+		2h)  v=120 ;;
+		*)
+			if [[ "$v" =~ ^[0-9]{1,4}$ ]] && (( 10#$v >= 1 && 10#$v <= 1440 )); then
+				v=$((10#$v))
+			else
+				die "timer takes off, 1h, 2h, or minutes (1-1440)"
+			fi
+			;;
+	esac
+	f="$(config_path timer)" || die "cannot resolve the config directory"
+	dir="$(dirname "$f")"
+	mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
+	printf '%s\n' "$v" > "$f" 2>/dev/null || die "cannot write $f"
+
+	if [[ "$v" == off ]]; then
+		f="$(config_path until)" && rm -f "$f"
+	elif [[ "$(read_mode)" == on ]]; then
+		arm_until "$v"
+	fi
+
+	printf '%sauto-off timer → %s%s%s\n' "$C_DIM" "$C_BOLD" "$v" "$C_RESET"
+	if [[ "$v" == off ]]; then
+		printf 'Always Awake no longer turns itself off after a set time.\n'
+	elif [[ "$(read_mode)" == on ]]; then
+		printf 'Always Awake turns off in %s minutes.\n' "$v"
+	else
+		printf 'Always Awake turns off %s minutes after you switch it on.\n' "$v"
+	fi
+}
+
+show_timer() {
+	local t u now
+	t="$(read_timer)"
+	if [[ "$t" == off ]]; then printf 'off\n'; return; fi
+	u="$(read_until)"; now=$(date +%s)
+	if [[ "$(read_mode)" == on && "$u" =~ ^[0-9]+$ ]] && (( 10#$u > now )); then
+		printf '%s (%s min left)\n' "$t" "$(( (10#$u - now + 59) / 60 ))"
+	else
+		printf '%s\n' "$t"
+	fi
+}
+
+# Whether `on` turns itself off when Low Power Mode is on. Off by default: many
+# Macs switch it on at every unplug, which would end Always Awake at once.
+read_lpm() {
+	local f v=''
+	f="$(config_path lpm)" || { printf 'off'; return; }
+	[[ -r "$f" ]] && { read -r v < "$f" || true; } 2>/dev/null
+	v=${v//[[:space:]]/}
+	if [[ "$v" == on ]]; then printf 'on'; else printf 'off'; fi
+}
+
+write_lpm() {
+	local v="$1" f dir
+	[[ "$v" == on || "$v" == off ]] || die "lpm takes on or off"
+	f="$(config_path lpm)" || die "cannot resolve the config directory"
+	dir="$(dirname "$f")"
+	mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
+	printf '%s\n' "$v" > "$f" 2>/dev/null || die "cannot write $f"
+
+	printf '%sturn off in Low Power Mode → %s%s%s\n' "$C_DIM" "$C_BOLD" "$v" "$C_RESET"
+	if [[ "$v" == on ]]; then
+		printf 'Always Awake turns off on battery when Low Power Mode is on.\n'
+	else
+		printf 'Low Power Mode no longer turns Always Awake off.\n'
+	fi
+}
+
+# Seconds since the epoch at which this Mac booted. Nothing if unreadable.
+boot_time() {
+	local out re='sec = ([0-9]+)'
+	out=$(sysctl -n kern.boottime 2>/dev/null) || return 0
+	[[ "$out" =~ $re ]] && printf '%s' "${BASH_REMATCH[1]}"
+	return 0
+}
+
 # Resolve the mode to the SleepDisabled value it wants, given a display count.
 # `auto` fails safe: anything unexpected means "let the machine sleep".
 want_for_displays() {
@@ -206,6 +397,12 @@ mode_stamp() {
 # Blanking state, carried across polls by cmd_watch.
 BLANK_STREAK=0   # consecutive polls the lid has read closed
 BLANK_LAST=0     # epoch seconds of the last display-sleep call
+
+# Cutoff state, same idea.
+CUT_LID_STREAK=0 # consecutive polls the lid has read closed, while mode is on
+FLOOR_STREAK=0   # consecutive polls on battery at or under the floor
+LPM_STREAK=0     # consecutive polls on battery with Low Power Mode on
+CUT_STAMP=''     # mode_stamp right after a cut; see held_by_cut
 
 # Sleep the built-in panel when nothing can possibly be looking at it.
 #
@@ -259,12 +456,140 @@ maybe_sleep_display() {
 # too (AlDente resets it when its helper restarts), and a cached value never
 # notices — the Mac then sleeps on lid close with the mode still saying `on`.
 apply_sleep_flag() {
-	local want="$1" displays="$2"
-	[[ "$(sleep_disabled)" == "$want" ]] && return 0
+	local want="$1" displays="$2" live="$3"
+	[[ "$live" == "$want" ]] && return 0
 	if pmset -b disablesleep "$want" 2>>"$LOG_FILE"; then
 		printf '%s mode=%s displays=%s disablesleep=%s\n' \
 			"$(date '+%Y-%m-%d %H:%M:%S')" "$(read_mode)" \
 			"$displays" "$want" >> "$LOG_FILE"
+	fi
+}
+
+# The watcher is root and the config directory belongs to the user, so it must
+# never write there as root: a user could swap a file for a symlink and have
+# root write through it. Every write and delete runs as the mode file's owner.
+owner_uid() {
+	local uid
+	uid=$(stat -f %u "$MODE_FILE" 2>/dev/null) || return 1
+	[[ "$uid" =~ ^[0-9]+$ ]] && (( 10#$uid != 0 )) || return 1
+	printf '%s' "$uid"
+}
+
+write_as_owner() {
+	local f="$1" v="$2" uid
+	uid=$(owner_uid) || return 1
+	sudo -n -u "#$uid" /bin/sh -c 'printf "%s\n" "$1" > "$2"' _ "$v" "$f" 2>>"$LOG_FILE"
+}
+
+remove_as_owner() {
+	local uid
+	uid=$(owner_uid) || return 1
+	sudo -n -u "#$uid" /bin/rm -f "$1" 2>>"$LOG_FILE"
+}
+
+# The mode file is set to `off`, because leaving it at `on` would have the next
+# poll switch the flag straight back on.
+cut_off() {
+	local reason="$1" percent="$2" displays="$3" f
+
+	write_as_owner "$MODE_FILE" off
+	f=$(config_path until) && remove_as_owner "$f"
+	pmset -b disablesleep 0 2>>"$LOG_FILE"
+	printf '%s cut reason=%s percent=%s\n' \
+		"$(date '+%Y-%m-%d %H:%M:%S')" "$reason" "${percent:-unknown}" >> "$LOG_FILE"
+	f=$(config_path last-cut) &&
+		write_as_owner "$f" "$reason $(date +%s)${percent:+ $percent}"
+
+	# Clearing the flag does not sleep a Mac whose lid is already shut: macOS
+	# decides that when the lid closes. So sleep it ourselves, but only with
+	# nobody there: lid shut on consecutive polls and no monitor attached. The
+	# flag must be cleared first, or sleepnow is ignored.
+	if (( CUT_LID_STREAK >= LID_CONFIRM )) && [[ "$displays" == 0 ]]; then
+		pmset sleepnow 2>>"$LOG_FILE"
+	fi
+
+	CUT_STAMP=$(mode_stamp)
+	FLOOR_STREAK=0
+	LPM_STREAK=0
+}
+
+# Has a cutoff already ended this mode? True while the mode file is unchanged
+# since the cut. Covers a failed write of `off` (root-owned file, sudo broken):
+# without it the very next poll would set the flag again.
+held_by_cut() {
+	[[ -n "$CUT_STAMP" ]] || return 1
+	[[ "$CUT_STAMP" == "$(mode_stamp)" ]] && return 0
+	CUT_STAMP=''
+	return 1
+}
+
+# Cutoffs apply only while the mode is `on`; `auto` is someone at a desk.
+# The floor and Low Power Mode cuts each need LID_CONFIRM polls in a row, so
+# one bad read cannot end a job.
+maybe_cut() {
+	local displays="$1" floor until_at f hold boot
+
+	hold=$(config_path lpm-hold) || hold=''
+
+	if [[ "$(read_mode)" != on ]]; then
+		CUT_LID_STREAK=0
+		FLOOR_STREAK=0
+		LPM_STREAK=0
+		[[ -n "$hold" && -e "$hold" ]] && remove_as_owner "$hold"
+		return
+	fi
+
+	# Its own counter: BLANK_STREAK also resets on `screen on` and on a monitor.
+	if lid_is_closed; then CUT_LID_STREAK=$(( CUT_LID_STREAK + 1 )); else CUT_LID_STREAK=0; fi
+
+	read_battery
+
+	# A reached deadline cuts even on AC, and with no streak: a clock comparison
+	# has no flaky reading. An unreadable one cuts too; the CLI writes it
+	# atomically, so that only comes from a hand edit.
+	until_at=$(read_until)
+	if [[ "$until_at" == bad ]] ||
+	   { [[ -n "$until_at" ]] && (( 10#$until_at <= $(date +%s) )); }; then
+		f=$(config_path timer) && write_as_owner "$f" off
+		cut_off timer "$PM_PERCENT" "$displays"
+		return
+	fi
+
+	# An unknown power source never cuts, it could be AC. An unreadable percent
+	# on battery counts as under the floor.
+	floor=$(read_floor)
+	if [[ "$floor" != off && "$PM_SOURCE" == 'Battery Power' ]] &&
+	   { [[ -z "$PM_PERCENT" ]] || (( 10#$PM_PERCENT <= 10#$floor )); }; then
+		FLOOR_STREAK=$(( FLOOR_STREAK + 1 ))
+		if (( FLOOR_STREAK >= LID_CONFIRM )); then
+			cut_off floor "$PM_PERCENT" "$displays"
+			return
+		fi
+	else
+		FLOOR_STREAK=0
+	fi
+
+	# The hold ends with that stretch of Low Power Mode, or with a reboot. A boot
+	# time that cannot be read invalidates it.
+	if [[ -n "$hold" && -e "$hold" ]]; then
+		boot=$(boot_time)
+		if [[ "$PM_LOW_POWER" != 1 || -z "$boot" ]] ||
+		   (( 10#$(stat -f %m "$hold" 2>/dev/null || echo 0) < 10#$boot )); then
+			remove_as_owner "$hold"
+			hold=''   # invalid even if the delete failed
+		fi
+	fi
+
+	# Opt-in, so an empty reading (older macOS has no such key) does not cut.
+	if [[ "$(read_lpm)" == on && "$PM_SOURCE" == 'Battery Power' &&
+	      "$PM_LOW_POWER" == 1 && ( -z "$hold" || ! -e "$hold" ) ]]; then
+		LPM_STREAK=$(( LPM_STREAK + 1 ))
+		if (( LPM_STREAK >= LID_CONFIRM )); then
+			cut_off lpm "$PM_PERCENT" "$displays"
+			return
+		fi
+	else
+		LPM_STREAK=0
 	fi
 }
 
@@ -292,9 +617,11 @@ cmd_watch() {
 			# Probed once and passed down, so adding the blanking check costs
 			# one extra ioreg per poll rather than three.
 			displays=$(external_displays)
+			read_power_settings
+			maybe_cut "$displays"
 			want=$(want_for_displays "$displays")
-
-			apply_sleep_flag "$want" "$displays"
+			held_by_cut && want=0
+			apply_sleep_flag "$want" "$displays" "$PM_SLEEP_DISABLED"
 			maybe_sleep_display "$want" "$displays"
 		fi
 
@@ -304,19 +631,34 @@ cmd_watch() {
 }
 
 cmd_status() {
-	local mode displays lid pid awake
+	local mode displays lid pid awake pct floor timer lpm
 	mode=$(read_mode)
 	displays=$(external_displays)
 	lid=open
 	lid_is_closed && lid=closed
 	pid=$(watcher_pid)
-	awake=$(sleep_disabled)
+	read_power_settings
+	read_battery
+	awake="$PM_SLEEP_DISABLED"
+	pct=unknown
+	[[ -n "$PM_PERCENT" ]] && pct="$PM_PERCENT%"
+	floor=$(read_floor)
+	[[ "$floor" == off ]] || floor="$floor%"
+	timer=$(read_timer)
+	[[ "$timer" == off ]] || timer="$timer min"
+	lpm=unknown
+	[[ "$PM_LOW_POWER" == 1 ]] && lpm=on
+	[[ "$PM_LOW_POWER" == 0 ]] && lpm=off
 
 	printf '%sclamshell %s%s\n\n' "$C_BOLD" "$VERSION" "$C_RESET"
 	printf '  mode                %s%s%s\n' "$C_BOLD" "$mode" "$C_RESET"
 	printf '  external displays   %s\n' "$displays"
 	printf '  lid                 %s\n' "$lid"
-	printf '  power               %s\n' "$(power_source)"
+	printf '  power               %s\n' "$PM_SOURCE"
+	printf '  battery             %s\n' "$pct"
+	printf '  battery floor       %s\n' "$floor"
+	printf '  auto-off timer      %s\n' "$timer"
+	printf '  low power mode      %s\n' "$lpm"
 	printf '  sleep disabled      %s\n' "${awake:-unknown}"
 	printf '  screen when closed  %s\n' "$(read_screen)"
 	case "$(internal_panel_level)" in
@@ -343,9 +685,13 @@ cmd_json() {
 	local pid awake lvl panel
 	local lid_closed=false on_battery=false sleep_off=false watching=false
 	local screen_pref
+	local pct=null floor timer until_at=null
+	local low_power=false lpm_cut=false lpm_hold=false last_cut=null f v=''
 
 	pid=$(watcher_pid)
-	awake=$(sleep_disabled)
+	read_power_settings
+	read_battery
+	awake="$PM_SLEEP_DISABLED"
 
 	# Tri-state, because "cannot tell" is a real answer here and must not be
 	# reported as "off": null when the panel level is unreadable.
@@ -356,10 +702,23 @@ cmd_json() {
 	fi
 
 	lid_is_closed && lid_closed=true
-	[[ "$(power_source)" == 'Battery Power' ]] && on_battery=true
+	[[ "$PM_SOURCE" == 'Battery Power' ]] && on_battery=true
 	[[ "$awake" == '1' ]] && sleep_off=true
 	[[ -n "$pid" ]] && watching=true
 	screen_pref="$(read_screen)"
+	[[ -n "$PM_PERCENT" ]] && pct=$((10#$PM_PERCENT))
+	[[ "$PM_LOW_POWER" == 1 ]] && low_power=true
+	floor=$(read_floor)
+	[[ "$floor" == off ]] && floor=null
+	timer=$(read_timer)
+	[[ "$timer" == off ]] && timer=null
+	until_at=$(read_until)
+	if [[ "$until_at" =~ ^[0-9]+$ ]]; then until_at=$((10#$until_at)); else until_at=null; fi
+	[[ "$(read_lpm)" == on ]] && lpm_cut=true
+	f=$(config_path lpm-hold) && [[ -e "$f" ]] && lpm_hold=true
+	# A stray quote in last-cut would make the whole document invalid JSON.
+	f=$(config_path last-cut) && [[ -r "$f" ]] && { read -r v < "$f" || true; } 2>/dev/null
+	[[ "$v" =~ ^(floor|timer|lpm)\ [0-9]+(\ [0-9]+)?$ ]] && last_cut="\"$v\""
 
 	printf '{'
 	printf '"version":"%s",'      "$VERSION"
@@ -370,6 +729,14 @@ cmd_json() {
 	printf '"sleepDisabled":%s,'  "$sleep_off"
 	printf '"screenWhenClosed":"%s",' "$screen_pref"
 	printf '"internalPanelOn":%s,' "$panel"
+	printf '"batteryPercent":%s,' "$pct"
+	printf '"lowPowerMode":%s,'   "$low_power"
+	printf '"floor":%s,'          "$floor"
+	printf '"timerMinutes":%s,'   "$timer"
+	printf '"until":%s,'          "$until_at"
+	printf '"lpmCut":%s,'         "$lpm_cut"
+	printf '"lpmHold":%s,'        "$lpm_hold"
+	printf '"lastCut":%s,'        "$last_cut"
 	printf '"watcherRunning":%s,' "$watching"
 	printf '"modeFile":"%s"'      "$MODE_FILE"
 	printf '}\n'
@@ -397,6 +764,15 @@ ${C_BOLD}COMMANDS${C_RESET}
                  What the built-in screen does once the lid is shut with
                  no display attached: ${C_BOLD}off${C_RESET} goes dark ${C_DIM}(default)${C_RESET}, ${C_BOLD}on${C_RESET} stays
                  lit. ${C_DIM}Prints the current setting when given no argument.${C_RESET}
+  floor [N|off]  Always Awake turns off on battery at N% or lower
+                 (5-50, default 15).
+                 ${C_DIM}Prints the current setting when given no argument.${C_RESET}
+  timer [off|1h|2h|MIN]
+                 Always Awake turns off this long after you switch it on.
+                 ${C_DIM}Prints the current setting when given no argument.${C_RESET}
+  lpm [on|off]   Always Awake turns off when Low Power Mode is on
+                 (default off).
+                 ${C_DIM}Prints the current setting when given no argument.${C_RESET}
   log [n]        Show the last n state changes (default 20)
   help           Show this message
   version        Show the version
@@ -426,6 +802,24 @@ case "${1:-status}" in
 			on|off) write_screen "$2" ;;
 			'')     printf '%s\n' "$(read_screen)" ;;
 			*)      die "screen takes on or off" ;;
+		esac
+		;;
+	floor)
+		case "${2:-}" in
+			'') printf '%s\n' "$(read_floor)" ;;
+			*)  write_floor "$2" ;;
+		esac
+		;;
+	timer)
+		case "${2:-}" in
+			'') show_timer ;;
+			*)  write_timer "$2" ;;
+		esac
+		;;
+	lpm)
+		case "${2:-}" in
+			'') printf '%s\n' "$(read_lpm)" ;;
+			*)  write_lpm "$2" ;;
 		esac
 		;;
 	log)             cmd_log "${2:-20}" ;;
