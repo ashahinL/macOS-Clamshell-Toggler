@@ -16,7 +16,7 @@ in a bag still sleeps like it always did.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-dark.png">
-    <img src="docs/images/panel-light.png" width="300" alt="The Clamshell panel: Always Awake is on, the battery is at 72%, auto-off is set to 30 minutes with 29 minutes left, and the battery floor is 15%.">
+    <img src="docs/images/panel-light.png" width="300" alt="The Clamshell panel: the mode picker (Automatic, Always Awake, Off), the auto-off timer, the battery floor, the Low Power Mode switch, and Open at Login.">
   </picture>
 </p>
 
