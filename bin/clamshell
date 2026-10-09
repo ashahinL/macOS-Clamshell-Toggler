@@ -633,7 +633,7 @@ cmd_watch() {
 }
 
 cmd_status() {
-	local mode displays lid pid awake
+	local mode displays lid pid awake pct floor timer lpm
 	mode=$(read_mode)
 	displays=$(external_displays)
 	lid=open
@@ -642,12 +642,25 @@ cmd_status() {
 	read_power_settings
 	read_battery
 	awake="$PM_SLEEP_DISABLED"
+	pct=unknown
+	[[ -n "$PM_PERCENT" ]] && pct="$PM_PERCENT%"
+	floor=$(read_floor)
+	[[ "$floor" == off ]] || floor="$floor%"
+	timer=$(read_timer)
+	[[ "$timer" == off ]] || timer="$timer min"
+	lpm=unknown
+	[[ "$PM_LOW_POWER" == 1 ]] && lpm=on
+	[[ "$PM_LOW_POWER" == 0 ]] && lpm=off
 
 	printf '%sclamshell %s%s\n\n' "$C_BOLD" "$VERSION" "$C_RESET"
 	printf '  mode                %s%s%s\n' "$C_BOLD" "$mode" "$C_RESET"
 	printf '  external displays   %s\n' "$displays"
 	printf '  lid                 %s\n' "$lid"
 	printf '  power               %s\n' "$PM_SOURCE"
+	printf '  battery             %s\n' "$pct"
+	printf '  battery floor       %s\n' "$floor"
+	printf '  auto-off timer      %s\n' "$timer"
+	printf '  low power mode      %s\n' "$lpm"
 	printf '  sleep disabled      %s\n' "${awake:-unknown}"
 	printf '  screen when closed  %s\n' "$(read_screen)"
 	case "$(internal_panel_level)" in
@@ -674,6 +687,8 @@ cmd_json() {
 	local pid awake lvl panel
 	local lid_closed=false on_battery=false sleep_off=false watching=false
 	local screen_pref
+	local pct=null floor timer until_at=null
+	local low_power=false lpm_cut=false lpm_hold=false last_cut=null f v=''
 
 	pid=$(watcher_pid)
 	read_power_settings
@@ -693,6 +708,19 @@ cmd_json() {
 	[[ "$awake" == '1' ]] && sleep_off=true
 	[[ -n "$pid" ]] && watching=true
 	screen_pref="$(read_screen)"
+	[[ -n "$PM_PERCENT" ]] && pct=$((10#$PM_PERCENT))
+	[[ "$PM_LOW_POWER" == 1 ]] && low_power=true
+	floor=$(read_floor)
+	[[ "$floor" == off ]] && floor=null
+	timer=$(read_timer)
+	[[ "$timer" == off ]] && timer=null
+	until_at=$(read_until)
+	if [[ "$until_at" =~ ^[0-9]+$ ]]; then until_at=$((10#$until_at)); else until_at=null; fi
+	[[ "$(read_lpm)" == on ]] && lpm_cut=true
+	f=$(config_path lpm-hold) && [[ -e "$f" ]] && lpm_hold=true
+	# A stray quote in last-cut would make the whole document invalid JSON.
+	f=$(config_path last-cut) && [[ -r "$f" ]] && { read -r v < "$f" || true; } 2>/dev/null
+	[[ "$v" =~ ^(floor|timer|lpm)\ [0-9]+(\ [0-9]+)?$ ]] && last_cut="\"$v\""
 
 	printf '{'
 	printf '"version":"%s",'      "$VERSION"
@@ -703,6 +731,14 @@ cmd_json() {
 	printf '"sleepDisabled":%s,'  "$sleep_off"
 	printf '"screenWhenClosed":"%s",' "$screen_pref"
 	printf '"internalPanelOn":%s,' "$panel"
+	printf '"batteryPercent":%s,' "$pct"
+	printf '"lowPowerMode":%s,'   "$low_power"
+	printf '"floor":%s,'          "$floor"
+	printf '"timerMinutes":%s,'   "$timer"
+	printf '"until":%s,'          "$until_at"
+	printf '"lpmCut":%s,'         "$lpm_cut"
+	printf '"lpmHold":%s,'        "$lpm_hold"
+	printf '"lastCut":%s,'        "$last_cut"
 	printf '"watcherRunning":%s,' "$watching"
 	printf '"modeFile":"%s"'      "$MODE_FILE"
 	printf '}\n'

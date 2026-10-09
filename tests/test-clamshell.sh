@@ -554,6 +554,66 @@ boot_check 'boot_time prints nothing when it cannot parse' '' 'garbage'
 
 rm -rf "$cut_dir"
 
+printf '\n\033[1mjson shape\033[0m\n\n'
+
+# $1: config dir. $2: `pmset -g batt` text. Read before the subshell, whose `set -- version` replaces $@.
+json_run() {
+	local dir="$1" batt="$2"
+	(
+		set -- version
+		export CLAMSHELL_MODE_FILE="$dir/mode"
+		# shellcheck disable=SC1090
+		source "$CLAMSHELL" >/dev/null
+		watcher_pid() { echo 123; }
+		internal_panel_level() { echo 0; }
+		lid_is_closed() { return 0; }
+		external_displays() { echo 0; }
+		pmset() {
+			if [[ "${2:-}" == batt ]]; then
+				printf '%b' "$batt"
+			else
+				printf ' SleepDisabled\t\t1\n lowpowermode\t\t1\n'
+			fi
+		}
+		cmd_json
+	)
+}
+
+batt_on="Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t42%; discharging; 1:00 remaining present: true\n"
+batt_no_pct="Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\tdischarging; 1:00 remaining present: true\n"
+
+full_dir="$(mktemp -d)"
+[[ -d "$full_dir" ]] || { printf 'json shape: no temp dir\n' >&2; exit 1; }
+printf 'on\n' > "$full_dir/mode"
+printf '20\n' > "$full_dir/floor"
+printf '60\n' > "$full_dir/timer"
+printf '1730000000\n' > "$full_dir/until"
+printf 'on\n' > "$full_dir/lpm"
+: > "$full_dir/lpm-hold"
+printf 'floor 1730000000 14\n' > "$full_dir/last-cut"
+
+bare_dir="$(mktemp -d)"
+[[ -d "$bare_dir" ]] || { printf 'json shape: no temp dir\n' >&2; exit 1; }
+printf 'on\n' > "$bare_dir/mode"
+printf 'floor 17300"00 14\n' > "$bare_dir/last-cut"
+
+version="$("$CLAMSHELL" version)"
+full_json="$(json_run "$full_dir" "$batt_on")"
+bare_json="$(json_run "$bare_dir" "$batt_no_pct")"
+
+expect_eq 'json: every key, with every config file present' \
+	'{"version":"'"$version"'","mode":"on","displays":0,"lidClosed":true,"onBattery":true,"sleepDisabled":true,"screenWhenClosed":"off","internalPanelOn":false,"batteryPercent":42,"lowPowerMode":true,"floor":20,"timerMinutes":60,"until":1730000000,"lpmCut":true,"lpmHold":true,"lastCut":"floor 1730000000 14","watcherRunning":true,"modeFile":"'"$full_dir"'/mode"}' \
+	"$full_json"
+
+expect_eq 'json: no config files gives defaults and nulls, and a stray quote in last-cut gives null' \
+	'{"version":"'"$version"'","mode":"on","displays":0,"lidClosed":true,"onBattery":true,"sleepDisabled":true,"screenWhenClosed":"off","internalPanelOn":false,"batteryPercent":null,"lowPowerMode":true,"floor":15,"timerMinutes":null,"until":null,"lpmCut":false,"lpmHold":false,"lastCut":null,"watcherRunning":true,"modeFile":"'"$bare_dir"'/mode"}' \
+	"$bare_json"
+
+expect_eq 'json: the first output parses as JSON' ok \
+	"$(osascript -l JavaScript -e 'function run(a){JSON.parse(a[0]); return "ok"}' "$full_json")"
+
+rm -rf "$full_dir" "$bare_dir"
+
 printf '\n\033[1minstaller\033[0m\n\n'
 
 # The error log is rotated so a reinstall does not present stale failures as
