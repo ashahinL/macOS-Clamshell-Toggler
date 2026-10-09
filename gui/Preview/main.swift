@@ -16,7 +16,7 @@ func sample(mode: String, displays: Int = 0, lidClosed: Bool = false,
             watcherRunning: Bool = true, lowPowerMode: Bool = false,
             floor: Int? = 15, timerMinutes: Int? = nil, until: Int? = nil,
             lpmCut: Bool = true, lpmHold: Bool = false) -> Status {
-    Status(version: "1.2.0", mode: mode, displays: displays, lidClosed: lidClosed,
+    Status(version: "1.3.0", mode: mode, displays: displays, lidClosed: lidClosed,
            onBattery: batteryPercent != nil, sleepDisabled: sleepDisabled,
            watcherRunning: watcherRunning, modeFile: "~/.config/clamshell/mode",
            batteryPercent: batteryPercent, lowPowerMode: lowPowerMode, floor: floor,

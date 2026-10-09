@@ -1,9 +1,9 @@
 # Clamshell
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
-![Platform: macOS](https://img.shields.io/badge/Platform-macOS%2011%2B-brightgreen.svg)
+![Platform: macOS](https://img.shields.io/badge/Platform-macOS%2013%2B-brightgreen.svg)
 ![Architecture: Apple Silicon](https://img.shields.io/badge/Arch-Apple%20Silicon-orange.svg)
-![Version: 1.2.0](https://img.shields.io/badge/Version-1.2.0-purple.svg)
+![Version: 1.2.0](https://img.shields.io/badge/Version-1.3.0-purple.svg)
 
 Use your Mac with the lid closed **on battery power** — no charger required.
 
@@ -14,21 +14,28 @@ enabled **only while an external display is actually attached**, so a laptop shu
 a bag still sleeps like it always did.
 
 ```
-┌──────────────────────────────────────┐
-│  Lid closed → stays awake            │
-│  1 display · closed · battery        │
-│ ──────────────────────────────────── │
-│ ✓ Automatic                          │
-│   Always Awake                       │
-│   Off                                │
-│ ──────────────────────────────────── │
-│ ✓ Open at Login                      │
-│   Open Log                           │
-│   Quit                               │
-└──────────────────────────────────────┘
+┌───────────────────────────────────────┐
+│ Lid closed → stays awake              │
+│ no display · lid open · battery 72%   │
+│ ⚠ No display: off at 15%              │
+│                                       │
+│ [ Automatic | Always Awake |  Off  ]  │
+│ Stays awake with the lid closed, even │
+│ with no display. This drains the      │
+│ battery.                              │
+│ ───────────────────────────────────── │
+│ WHEN ALWAYS AWAKE                     │
+│ Auto-off                  [ 1 hour ▾] │
+│   Off in 00:29:38                     │
+│ Battery floor             [ 15%    ▾] │
+│ Turn off in Low Power Mode      [ ○ ] │
+│ ───────────────────────────────────── │
+│ Open at Login                   [ ● ] │
+│ Open Log                         Quit │
+└───────────────────────────────────────┘
 ```
 
-Each mode explains itself on hover. The menu bar icon is a laptop whose screen
+Each mode explains itself under the switch. The menu bar icon is a laptop whose screen
 carries the state: **lit** when the
 Mac keeps running with the lid shut, **empty** when closing the lid will put it
 to sleep, and a warning triangle if the watcher has stopped.
@@ -37,7 +44,7 @@ to sleep, and a warning triangle if the watcher has stopped.
 
 - **Works on battery** — closed-lid operation without the charger plugged in
 - **Safe by default** — the override only applies while an external display is connected
-- **Menu bar app** — see the current state and switch modes in one click
+- **Menu bar app** — see the current state, switch modes and set the cutoffs in one panel
 - **No password after install** — mode switching writes a file in your home directory
 - **Screen off, machine on** — the built-in panel sleeps behind a closed lid
   instead of staying lit, while wifi, audio and running jobs carry on
@@ -143,15 +150,16 @@ effect. Then launch the menu bar app:
 open /Applications/Clamshell.app
 ```
 
-Tick **Open at Login** in the menu to have it start automatically. That uses
-`SMAppService` on macOS 13+, so the entry appears under System Settings → Login
-Items; macOS may ask you to approve it there the first time. On older releases,
-or if registration is refused for a locally built app, it falls back to a
-LaunchAgent at `~/Library/LaunchAgents/local.clamshell.menubar.plist`.
+Turn on **Open at Login** in the panel to have it start automatically. That uses
+`SMAppService`, so the entry appears under System Settings → Login Items; macOS
+may ask you to approve it there the first time. If registration is refused for
+a locally built app, it falls back to a LaunchAgent at `~/Library/LaunchAgents/local.clamshell.menubar.plist`.
 
 ## Usage
 
-Click the menu bar icon to see the current state and switch modes. The command
+Click the menu bar icon to open the panel: the current state, the mode switch
+and the cutoff settings. Click outside it, press Esc or click the icon again to
+close it. The command
 line does the same and a little more — the screen setting is CLI-only:
 
 ```sh
@@ -233,7 +241,8 @@ Both unload the daemon, remove the installed files, and reset `disablesleep` to 
 ## Testing
 
 ```sh
-make test
+make test       # the CLI and watcher
+make preview    # the panel, drawn to build/preview/*.png in light and dark
 ```
 
 `ioreg` is stubbed on `PATH`, so the whole mode truth table — including the
@@ -321,6 +330,7 @@ launchd/local.clamshell.plist.in  LaunchDaemon template (__MODE_FILE__ is
                                   substituted at install time)
 gui/Clamshell/*.swift             menu bar app (Swift/AppKit) — a view only
 gui/Clamshell/Info.plist          app bundle metadata
+gui/Preview/main.swift            renders the panel to PNG (make preview)
 scripts/install.sh                installer
 scripts/uninstall.sh              uninstaller, installed as clamshell-uninstall
 tests/test-clamshell.sh           behavioural tests
