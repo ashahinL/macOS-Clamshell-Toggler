@@ -250,6 +250,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var countdownTimer: Timer?
     private var menuIsOpen = false
     private var status: Status?
+    private var lastCutSeen: String?
+    private var haveCutBaseline = false
 
     /// While the menu is open the contents must be live; while it is shut the
     /// only consumer is the icon.
@@ -295,6 +297,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // One blocking read at launch so the first open is already correct.
         status = CLI.status()
+        noteCut(status)
         apply()
 
         startTicker(interval: Self.idleInterval)
@@ -558,8 +561,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let fresh = CLI.status()
             DispatchQueue.main.async {
                 self?.status = fresh
+                self?.noteCut(fresh)
                 self?.apply()
             }
+        }
+    }
+
+    /// The first good read only sets the baseline: an old cutoff is already over, so it must not notify.
+    private func noteCut(_ status: Status?) {
+        guard let status else { return }
+        guard haveCutBaseline else {
+            lastCutSeen = status.lastCut
+            haveCutBaseline = true
+            return
+        }
+        guard status.lastCut != lastCutSeen else { return }
+        lastCutSeen = status.lastCut
+        guard let line = status.lastCut, let message = cutMessage(line) else { return }
+        probe.async {
+            CLI.run("/usr/bin/osascript", ["-e", "on run argv",
+                                           "-e", "display notification (item 1 of argv) with title \"Clamshell\"",
+                                           "-e", "end run",
+                                           message])
+        }
+    }
+
+    private func cutMessage(_ line: String) -> String? {
+        let fields = line.split(separator: " ")
+        guard let kind = fields.first else { return nil }
+        switch kind {
+        case "floor":
+            if fields.count > 2 { return "Battery at \(fields[2])%. Clamshell turned off." }
+            return "Battery low. Clamshell turned off."
+        case "timer":
+            return "Auto-off timer ended. Clamshell turned off."
+        case "lpm":
+            return "Low Power Mode is on. Clamshell turned off."
+        default:
+            return nil
         }
     }
 
