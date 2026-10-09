@@ -104,9 +104,9 @@ mode is `on`.
 
 | Cutoff | Default | Command | When it fires |
 |---|---|---|---|
-| Battery floor | 15% | `clamshell floor [N\|off]` | On battery, at or below N% on two polls in a row (about 10 seconds). N is 5 to 50. A plugged-in Mac never trips it. |
+| Battery floor | 15% | `clamshell floor [N\|off]` | On battery, at or below N% on two polls in a row (about 10 seconds). N is 5 to 50. It also fires when the power source cannot be read. A plugged-in Mac never trips it. |
 | Auto-off timer | off | `clamshell timer [off\|1h\|2h\|MIN]` | This long after `on` is set. MIN is 1 to 1440 minutes. It fires on AC too. |
-| Low Power Mode | off | `clamshell lpm [on\|off]` | On battery, with Low Power Mode on for two polls in a row. |
+| Low Power Mode | off | `clamshell lpm [on\|off]` | On battery, with Low Power Mode on for two polls in a row. Switching to `on` while Low Power Mode is already on skips this cutoff until Low Power Mode turns off. |
 
 When a cutoff fires, Clamshell sets the mode to `off` and clears the sleep
 flag, and the app shows a notification. If the lid is shut and no monitor is
@@ -115,7 +115,8 @@ is attached, it leaves the Mac awake. Plugging in afterwards does not turn `on`
 back on.
 
 The root watcher enforces the timer, so quitting the app or rebooting does not
-cancel it.
+cancel it. When the timer fires, it also sets the timer to `off`, so the next
+`on` does not start a new countdown.
 
 ### Use the command line
 

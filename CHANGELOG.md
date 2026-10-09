@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   timer appears in its picker instead of leaving nothing selected.
 - **macOS 13 or later is required** (was 11). The panel's controls need it.
 
+### Fixed
+- **The battery floor now fires when the power source cannot be read.** Before,
+  a failed `pmset -g batt` left Always Awake on until the battery ran out.
+- **One missed Low Power Mode reading no longer ends the hold** that keeps
+  Always Awake on when you chose it during Low Power Mode.
+- **A cutoff fires once.** If writing `off` failed, every poll cut again, with
+  a new log line, a new sleep attempt and a new notification each time.
+- **The sleep flag is cleared even if the log cannot be opened.** Bash skipped
+  the `pmset` call when its error redirect failed.
+- **`clamshell json` stays valid** when the mode file path has a quote or a
+  backslash in it.
+
 ### Added
 - **`make preview`** draws the panel in five sample states, light and dark, to
   `build/preview/`.

@@ -239,7 +239,9 @@ cut_dir="$(mktemp -d)"
 # Low Power Mode inputs come in as env vars:
 #   CUT_LPM      content of the `lpm` file (unset → no file)
 #   CUT_HOLD_AT  mtime of an `lpm-hold` file, epoch seconds (unset → no file)
-#   CUT_LP       lowpowermode value in the `pmset -g` output (default 0)
+#   CUT_LP       lowpowermode value in the `pmset -g` output (default 0; none → no such line)
+#   CUT_SUDO_FAIL  non-empty → every sudo call fails, as with a broken sudoers rule
+#   CUT_LOG      path for CLAMSHELL_LOG_FILE (default: a file in the temp dir)
 #   CUT_BOOT     what boot_time prints, epoch seconds (none → nothing; default an hour ago)
 cut_run() { # mode source pct floor lid displays polls [until [timer [lid-streak]]]
 	local mode="$1" src="$2" pct="$3" floor="$4" until_v="${8:-}" timer_v="${9:-}"
@@ -259,7 +261,7 @@ cut_run() { # mode source pct floor lid displays polls [until [timer [lid-streak
 	: > "$cut_dir/log"; : > "$cut_dir/calls"; : > "$cut_dir/batt"
 	(
 		set -- version
-		export CLAMSHELL_MODE_FILE="$cut_dir/mode" CLAMSHELL_LOG_FILE="$cut_dir/log"
+		export CLAMSHELL_MODE_FILE="$cut_dir/mode" CLAMSHELL_LOG_FILE="${CUT_LOG:-$cut_dir/log}"
 		# shellcheck disable=SC1090
 		source "$CLAMSHELL" >/dev/null
 		lid_is_closed() { return "$cut_lid"; }
@@ -274,12 +276,17 @@ cut_run() { # mode source pct floor lid displays polls [until [timer [lid-streak
 				[[ "$cut_pct" == none ]] ||
 					printf ' -InternalBattery-0 (id=1)\t%s%%; discharging; 0:40 remaining present: true\n' "$cut_pct"
 			elif [[ "${1:-}" == -g && -z "${2:-}" ]]; then
-				printf ' SleepDisabled\t\t0\n lowpowermode\t\t%s\n' "$cut_lp"
+				printf ' SleepDisabled\t\t0\n'
+				[[ "$cut_lp" == none ]] || printf ' lowpowermode\t\t%s\n' "$cut_lp"
 			else
 				printf 'pmset %s\n' "$*" >> "$cut_dir/calls"
 			fi
 		}
-		sudo() { printf 'sudo %s\n' "$*" >> "$cut_dir/calls"; shift 3; "$@"; }
+		sudo() {
+			printf 'sudo %s\n' "$*" >> "$cut_dir/calls"
+			[[ -z "${CUT_SUDO_FAIL:-}" ]] || return 1
+			shift 3; "$@"
+		}
 		for ((i = 0; i < cut_polls; i++)); do read_power_settings; maybe_cut "$cut_disp"; done
 	)
 }
@@ -323,6 +330,14 @@ cut_run on 'Battery Power' 14 banana 0 0 2
 expect_eq 'garbage floor file → treated as 15' "$tripped" "$(cut_summary)"
 cut_run on 'Battery Power' 16 '' 0 0 2
 expect_eq 'above the floor → no cut' "$quiet" "$(cut_summary)"
+cut_run on '' none '' 0 0 2
+expect_eq 'unreadable source, no percentage → cut (fail-safe)' "$tripped" "$(cut_summary)"
+cut_run on '' 80 '' 0 0 5
+expect_eq 'unreadable source, 80% → no cut' "$quiet" "$(cut_summary)"
+cut_run on 'AC Power' none '' 0 0 5
+expect_eq 'AC with no percentage → no cut' "$quiet" "$(cut_summary)"
+cut_run on 'UPS Power' none '' 0 0 5
+expect_eq 'UPS with no percentage → no cut' "$quiet" "$(cut_summary)"
 
 floor_check() { # name expected command...
 	local name="$1" expect="$2"; shift 2
@@ -357,6 +372,21 @@ held="$(
 	printf '%s %s [%s]' "$a" "$b" "$CUT_STAMP"
 )"
 expect_eq 'a cut holds until the mode file changes' 'true false []' "$held"
+
+# Every sudo fails, so `off`, the timer and the deadline all stay as they were.
+# Later polls must not cut again: no new log line, last-cut or sleepnow.
+CUT_SUDO_FAIL=1 cut_run on 'Battery Power' 80 '' 0 0 3 "$(( $(date +%s) - 10 ))" 60 1
+expect_eq 'mode write fails, deadline passed, 3 polls → one cut, one sleepnow' \
+	'mode=on cuts=1 pmset=[-b disablesleep 0;sleepnow]' "$(cut_summary)"
+expect_eq 'mode write fails → last-cut was attempted once' 1 \
+	"$(/usr/bin/grep -c 'last-cut$' "$cut_dir/calls" || true)"
+
+# bash skips a command whose redirection cannot open, so with an unwritable log
+# the plain `pmset ... 2>>log` never ran. The write of `off` fails here too (its
+# sudo call logs the same way), which is fine: the flag is what is under test.
+CUT_LOG="$cut_dir/no-such-dir/log" cut_run on 'Battery Power' 14 '' 0 0 2 2>/dev/null
+expect_eq 'log cannot be opened → disablesleep 0 still reaches pmset' 1 \
+	"$(/usr/bin/grep -c '^pmset -b disablesleep 0$' "$cut_dir/calls" || true)"
 
 printf '\n\033[1mauto-off timer\033[0m  (a deadline ends Always Awake by itself)\n\n'
 
@@ -492,6 +522,9 @@ CUT_LPM=on CUT_LP=1 CUT_HOLD_AT=$now CUT_BOOT=$touch_hr cut_run auto 'Battery Po
 expect_eq 'mode auto, hold present → hold deleted, no cut' 'mode=auto cuts=0 pmset=[] gone' \
 	"$(cut_summary) $(hold_gone)"
 
+CUT_LPM=on CUT_LP=none CUT_HOLD_AT=$now CUT_BOOT=$touch_hr cut_run on 'Battery Power' 80 '' 0 0 3
+expect_eq 'one poll with no lowpowermode line → hold kept, no cut' "$quiet there" "$(cut_summary) $(hold_gone)"
+
 lpm_cli() { # lowpowermode command...
 	local lp="$1"; shift
 	local cmd=("$@")   # `set -- version` below replaces $@
@@ -515,6 +548,9 @@ lpm_reset() { # [lpm [stale-hold]]
 lpm_reset on
 lpm_cli 1 write_mode on >/dev/null
 expect_eq 'CLI: lpm on, on while low power is on → hold exists' there "$(hold_gone)"
+lpm_reset on
+lpm_cli '' write_mode on >/dev/null
+expect_eq 'CLI: lpm on, low power unreadable → hold exists' there "$(hold_gone)"
 lpm_reset on stale
 lpm_cli 0 write_mode on >/dev/null
 expect_eq 'CLI: lpm on, on while low power is off → no hold, stale one removed' gone "$(hold_gone)"
@@ -608,6 +644,13 @@ expect_eq 'json: no config files gives defaults and nulls, and a stray quote in 
 
 expect_eq 'json: the first output parses as JSON' ok \
 	"$(osascript -l JavaScript -e 'function run(a){JSON.parse(a[0]); return "ok"}' "$full_json")"
+
+quote_dir="$bare_dir/q\"b\\c"$'\t'"d"
+mkdir -p "$quote_dir"
+printf 'on\n' > "$quote_dir/mode"
+expect_eq 'json: a quote, a backslash and a tab in the mode file path → valid, tab dropped' \
+	"$bare_dir/q\"b\\cd/mode" \
+	"$(osascript -l JavaScript -e 'function run(a){return JSON.parse(a[0]).modeFile}' "$(json_run "$quote_dir" "$batt_on")")"
 
 rm -rf "$full_dir" "$bare_dir"
 
