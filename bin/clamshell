@@ -67,7 +67,7 @@ config_path() {
 # different filename means a stale one is simply ignored.
 screen_file() { config_path screen; }
 
-# Filled by read_power_settings and read_battery, once per pass.
+# Set by read_power_settings and read_battery.
 PM_SLEEP_DISABLED=''; PM_LOW_POWER=''; PM_SOURCE=''; PM_PERCENT=''
 
 # ------------------------------------------------------------------ probes ---
@@ -487,9 +487,6 @@ remove_as_owner() {
 	sudo -n -u "#$uid" /bin/rm -f "$1" 2>>"$LOG_FILE"
 }
 
-# Turn Always Awake off: $1 is why, $2 the battery percent (may be empty), $3
-# the external display count.
-#
 # The mode file is set to `off`, because leaving it at `on` would have the next
 # poll switch the flag straight back on.
 cut_off() {
@@ -527,7 +524,8 @@ held_by_cut() {
 }
 
 # Cutoffs apply only while the mode is `on`; `auto` is someone at a desk.
-# Each one needs LID_CONFIRM polls in a row, so one bad read cannot end a job.
+# The floor and Low Power Mode cuts each need LID_CONFIRM polls in a row, so
+# one bad read cannot end a job.
 maybe_cut() {
 	local displays="$1" floor until_at f hold boot
 

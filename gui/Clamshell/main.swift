@@ -69,8 +69,7 @@ enum CLI {
         return try? JSONDecoder().decode(Status.self, from: data)
     }
 
-    /// Mode, floor, timer and Low Power Mode changes only rewrite files in the
-    /// user's home — no sudo.
+    /// Every setting is a file in the user's home, so no sudo.
     static func set(_ args: [String]) {
         guard isInstalled else { return }
         run(path, args)
@@ -348,10 +347,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         syncCountdownTimer()
     }
 
-    /// The countdown row only ticks while someone can see it and a deadline is
-    /// set. It is a separate 1s timer that just rewrites one title from the
-    /// cached `until` — no CLI call, no refresh. On `.common` for the same
-    /// reason as the status ticker.
+    /// Rewrites one title from cached status, no CLI call. On `.common` for the
+    /// same reason as the status ticker.
     private func syncCountdownTimer() {
         if menuIsOpen && countdownText() != nil {
             guard countdownTimer == nil else { return }
@@ -371,8 +368,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setInfoTitle(countdownItem, text, monospacedDigits: true)
     }
 
-    /// `Auto-off in HH:MM:SS`, or nil when no deadline is showing. Never goes
-    /// below zero: the watcher can take a few seconds to act after the deadline.
+    /// Clamped at zero: the watcher can take a few seconds to act after the
+    /// deadline.
     private func countdownText() -> String? {
         guard let status, status.mode == "on", let until = status.until else { return nil }
         let left = max(0, until - Int(Date().timeIntervalSince1970))
@@ -485,8 +482,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return menu
     }
 
-    /// A parent item with a fixed submenu of choices. Each choice carries its
-    /// CLI argument in `representedObject`.
     private func submenuItem(_ title: String, help: String,
                              choices: [(value: String, title: String)],
                              action: Selector,
@@ -747,8 +742,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Change a setting through the CLI, then re-read. These do not wait on
-    /// the watcher, so a single refresh is enough.
+    /// No watcher round trip, unlike a mode change, so one refresh is enough.
     private func change(_ args: [String]) {
         probe.async { [weak self] in
             CLI.set(args)

@@ -236,7 +236,7 @@ cut_dir="$(mktemp -d)"
 # Runs maybe_cut `polls` times against a real mode file in a temp dir. pmset
 # and sudo are stubs; sudo still runs the command, as the current user, so the
 # writes really happen. `pct` is a number, or `none` for a line without one.
-# Low Power Mode inputs come in as env vars, so existing calls stay as they are:
+# Low Power Mode inputs come in as env vars:
 #   CUT_LPM      content of the `lpm` file (unset → no file)
 #   CUT_HOLD_AT  mtime of an `lpm-hold` file, epoch seconds (unset → no file)
 #   CUT_LP       lowpowermode value in the `pmset -g` output (default 0)
@@ -284,7 +284,6 @@ cut_run() { # mode source pct floor lid displays polls [until [timer [lid-streak
 	)
 }
 
-# One line: mode, how many cuts were logged, the pmset writes in order.
 cut_summary() {
 	printf 'mode=%s cuts=%s pmset=[%s]' \
 		"$(tr -d '[:space:]' < "$cut_dir/mode")" \
@@ -325,7 +324,6 @@ expect_eq 'garbage floor file → treated as 15' "$tripped" "$(cut_summary)"
 cut_run on 'Battery Power' 16 '' 0 0 2
 expect_eq 'above the floor → no cut' "$quiet" "$(cut_summary)"
 
-# read_floor and write_floor, in a temp dir.
 floor_check() { # name expected command...
 	local name="$1" expect="$2"; shift 2
 	local cmd=("$@")   # `set -- version` below replaces $@
@@ -401,7 +399,7 @@ timer_reset() { # mode [timer [until]]
 	[[ -z "${2:-}" ]] || printf '%s\n' "$2" > "$cut_dir/timer"
 	[[ -z "${3:-}" ]] || printf '%s\n' "$3" > "$cut_dir/until"
 }
-# "ok" when until holds a time $2 seconds from now, give or take 10.
+# "ok" when until is $1 seconds from now, give or take 10.
 until_near() {
 	local u; u=$(cat "$cut_dir/until" 2>/dev/null)
 	[[ "$u" =~ ^[0-9]+$ ]] && (( u >= $(date +%s) + $1 - 10 && u <= $(date +%s) + $1 + 10 )) &&
@@ -494,7 +492,6 @@ CUT_LPM=on CUT_LP=1 CUT_HOLD_AT=$now CUT_BOOT=$touch_hr cut_run auto 'Battery Po
 expect_eq 'mode auto, hold present → hold deleted, no cut' 'mode=auto cuts=0 pmset=[] gone' \
 	"$(cut_summary) $(hold_gone)"
 
-# CLI side. pmset is stubbed to report the given lowpowermode.
 lpm_cli() { # lowpowermode command...
 	local lp="$1"; shift
 	local cmd=("$@")   # `set -- version` below replaces $@
@@ -556,7 +553,7 @@ rm -rf "$cut_dir"
 
 printf '\n\033[1mjson shape\033[0m\n\n'
 
-# $1: config dir. $2: `pmset -g batt` text. Read before the subshell, whose `set -- version` replaces $@.
+# Arguments are read before the subshell, whose `set -- version` replaces $@.
 json_run() {
 	local dir="$1" batt="$2"
 	(
