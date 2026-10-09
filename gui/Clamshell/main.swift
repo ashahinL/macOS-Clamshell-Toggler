@@ -179,7 +179,7 @@ enum LoginItem {
 /// empty one means closing the lid will put it to sleep.
 enum LaptopIcon {
     enum State {
-        case awake, asleep, warning
+        case awake, asleep, warning, armed
     }
 
     static func image(for state: State) -> NSImage {
@@ -191,7 +191,7 @@ enum LaptopIcon {
         }
 
         let size = NSSize(width: 18, height: 14)
-        let lit = (state == .awake)
+        let lit = (state == .awake || state == .armed)
 
         let image = NSImage(size: size, flipped: false) { _ in
             NSColor.black.set()
@@ -221,6 +221,18 @@ enum LaptopIcon {
                 roundedRect: NSRect(x: 0.6, y: 2.0, width: 16.8, height: 1.6),
                 xRadius: 0.8, yRadius: 0.8
             ).fill()
+
+            if state == .armed {
+                // Cut a gap first so the dot stays separate from the lit screen.
+                NSGraphicsContext.current?.compositingOperation = .clear
+                NSBezierPath(
+                    ovalIn: NSRect(x: 16.0 - 2.55, y: 12.0 - 2.55, width: 5.1, height: 5.1)
+                ).fill()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
+                NSBezierPath(
+                    ovalIn: NSRect(x: 16.0 - 1.75, y: 12.0 - 1.75, width: 3.5, height: 3.5)
+                ).fill()
+            }
 
             return true
         }
@@ -643,6 +655,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if let status, !status.watcherRunning {
             state = .warning
             description = "clamshell watcher is not running"
+        } else if let status, status.sleepDisabled, status.mode == "on", status.onBattery {
+            state = .armed
+            description = armedTooltip(status)
         } else if let status, status.sleepDisabled {
             state = .awake
             description = "Lid closed keeps this Mac awake"
@@ -653,6 +668,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         button.image = LaptopIcon.image(for: state)
         button.toolTip = description
+    }
+
+    private func armedTooltip(_ status: Status) -> String {
+        var cutoffs: [String] = []
+        if let floor = status.floor { cutoffs.append("at \(floor)%") }
+        if status.timerMinutes != nil { cutoffs.append("when the timer ends") }
+        if status.lpmCut && !status.lpmHold { cutoffs.append("in Low Power Mode") }
+
+        switch cutoffs.count {
+        case 0:
+            return "Awake on battery. Nothing will turn it off."
+        case 1:
+            return "Awake on battery. Off \(cutoffs[0])."
+        case 2:
+            return "Awake on battery. Off \(cutoffs[0]), or \(cutoffs[1])."
+        default:
+            return "Awake on battery. Off \(cutoffs[0]), \(cutoffs[1]), or \(cutoffs[2])."
+        }
     }
 
     // MARK: Actions
