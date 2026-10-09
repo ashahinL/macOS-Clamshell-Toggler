@@ -66,6 +66,9 @@ screen_file() {
 	printf '%s/screen' "$(dirname "$MODE_FILE")"
 }
 
+# Filled by read_power_settings and read_battery, once per pass.
+PM_SLEEP_DISABLED=''; PM_LOW_POWER=''; PM_SOURCE=''; PM_PERCENT=''
+
 # ------------------------------------------------------------------ probes ---
 
 # Count attached external displays.
@@ -85,12 +88,27 @@ lid_is_closed() {
 		awk '/"AppleClamshellState" = Yes/{f=1} END{exit !f}'
 }
 
-power_source() {
-	pmset -g batt 2>/dev/null | sed -n "1s/Now drawing from //p" | tr -d "'"
+read_power_settings() {
+	# Read by the power readings test; shellcheck only sees this file.
+	# shellcheck disable=SC2034
+	IFS='|' read -r PM_SLEEP_DISABLED PM_LOW_POWER < <(
+		pmset -g 2>/dev/null |
+			awk '$1=="SleepDisabled"{s=$2} $1=="lowpowermode"{l=$2} END{print s "|" l}'
+	)
 }
 
-sleep_disabled() {
-	pmset -g 2>/dev/null | awk '/SleepDisabled/{print $2}'
+read_battery() {
+	# Read by the power readings test; shellcheck only sees this file.
+	# shellcheck disable=SC2034
+	IFS='|' read -r PM_SOURCE PM_PERCENT < <(
+		pmset -g batt 2>/dev/null | awk -v q="'" '
+			NR == 1 && index($0, "Now drawing from " q) {
+				s = substr($0, index($0, q) + 1)
+				src = substr(s, 1, index(s, q) - 1)
+			}
+			NR == 2 && match($0, /[0-9]+%/) { pct = substr($0, RSTART, RLENGTH - 1) }
+			END { print src "|" pct }'
+	)
 }
 
 watcher_pid() {
@@ -259,8 +277,8 @@ maybe_sleep_display() {
 # too (AlDente resets it when its helper restarts), and a cached value never
 # notices — the Mac then sleeps on lid close with the mode still saying `on`.
 apply_sleep_flag() {
-	local want="$1" displays="$2"
-	[[ "$(sleep_disabled)" == "$want" ]] && return 0
+	local want="$1" displays="$2" live="$3"
+	[[ "$live" == "$want" ]] && return 0
 	if pmset -b disablesleep "$want" 2>>"$LOG_FILE"; then
 		printf '%s mode=%s displays=%s disablesleep=%s\n' \
 			"$(date '+%Y-%m-%d %H:%M:%S')" "$(read_mode)" \
@@ -294,7 +312,8 @@ cmd_watch() {
 			displays=$(external_displays)
 			want=$(want_for_displays "$displays")
 
-			apply_sleep_flag "$want" "$displays"
+			read_power_settings
+			apply_sleep_flag "$want" "$displays" "$PM_SLEEP_DISABLED"
 			maybe_sleep_display "$want" "$displays"
 		fi
 
@@ -310,13 +329,15 @@ cmd_status() {
 	lid=open
 	lid_is_closed && lid=closed
 	pid=$(watcher_pid)
-	awake=$(sleep_disabled)
+	read_power_settings
+	read_battery
+	awake="$PM_SLEEP_DISABLED"
 
 	printf '%sclamshell %s%s\n\n' "$C_BOLD" "$VERSION" "$C_RESET"
 	printf '  mode                %s%s%s\n' "$C_BOLD" "$mode" "$C_RESET"
 	printf '  external displays   %s\n' "$displays"
 	printf '  lid                 %s\n' "$lid"
-	printf '  power               %s\n' "$(power_source)"
+	printf '  power               %s\n' "$PM_SOURCE"
 	printf '  sleep disabled      %s\n' "${awake:-unknown}"
 	printf '  screen when closed  %s\n' "$(read_screen)"
 	case "$(internal_panel_level)" in
@@ -345,7 +366,9 @@ cmd_json() {
 	local screen_pref
 
 	pid=$(watcher_pid)
-	awake=$(sleep_disabled)
+	read_power_settings
+	read_battery
+	awake="$PM_SLEEP_DISABLED"
 
 	# Tri-state, because "cannot tell" is a real answer here and must not be
 	# reported as "off": null when the panel level is unreadable.
@@ -356,7 +379,7 @@ cmd_json() {
 	fi
 
 	lid_is_closed && lid_closed=true
-	[[ "$(power_source)" == 'Battery Power' ]] && on_battery=true
+	[[ "$PM_SOURCE" == 'Battery Power' ]] && on_battery=true
 	[[ "$awake" == '1' ]] && sleep_off=true
 	[[ -n "$pid" ]] && watching=true
 	screen_pref="$(read_screen)"

@@ -147,10 +147,9 @@ flag_check() { # name expected_writes want live
 		export CLAMSHELL_LOG_FILE="$flag_log"
 		# shellcheck disable=SC1090
 		source "$CLAMSHELL" >/dev/null
-		sleep_disabled() { printf '%s' "$live"; }
-		pmset()          { printf 'pmset %s\n' "$*" >> "$flag_calls"; return 0; }
+		pmset() { printf 'pmset %s\n' "$*" >> "$flag_calls"; return 0; }
 		: > "$flag_calls"
-		apply_sleep_flag "$want" 0
+		apply_sleep_flag "$want" 0 "$live"
 		/usr/bin/grep -c "disablesleep $want" "$flag_calls" 2>/dev/null || true
 	)"
 	got="${got:-0}"
@@ -172,6 +171,52 @@ flag_check 'already set                → left alone'    0     1    1
 flag_check 'unreadable, want sleep     → written'       1     0    ''
 
 rm -f "$flag_log" "$flag_calls"
+
+printf '\n\033[1mpower readings\033[0m  (one pmset call each per pass)\n\n'
+
+# Same sourcing trick. `batt` is `pmset -g batt`, `settings` is `pmset -g`.
+# The stub returns 1 when it prints nothing, as pmset does on failure.
+readings_check() { # name expected batt settings
+	local name="$1" expect="$2" batt="$3" settings="$4" got
+	got="$(
+		set -- version
+		# shellcheck disable=SC1090
+		source "$CLAMSHELL" >/dev/null
+		pmset() {
+			local out
+			# $2, not "$*": IFS is '|' here, because the read prefix reaches the process substitution.
+			if [[ "${2:-}" == batt ]]; then out="$batt"; else out="$settings"; fi
+			printf '%s' "$out"
+			[[ -n "$out" ]]
+		}
+		read_power_settings
+		read_battery
+		printf '%s|%s|%s|%s' "$PM_SLEEP_DISABLED" "$PM_LOW_POWER" "$PM_SOURCE" "$PM_PERCENT"
+	)"
+	if [[ "$got" == "$expect" ]]; then
+		printf '  \033[32mok\033[0m   %s\n' "$name"
+		pass=$((pass + 1))
+	else
+		printf '  \033[31mFAIL\033[0m %s — expected %s, got %s\n' "$name" "$expect" "$got"
+		fail=$((fail + 1))
+	fi
+}
+
+ac_70=$'Now drawing from \'AC Power\'\n -InternalBattery-0 (id=1)\t70%; charging; 0:40 remaining present: true'
+ac_85=$'Now drawing from \'AC Power\'\n -InternalBattery-0 (id=1)\t85%; charged; 0:00 remaining present: true'
+batt_14=$'Now drawing from \'Battery Power\'\n -InternalBattery-0 (id=1)\t14%; discharging; 1:05 remaining present: true'
+batt_nopct="Now drawing from 'Battery Power'"
+settings_on=$' SleepDisabled\t\t1\n lowpowermode\t\t1'
+settings_off=$' SleepDisabled\t\t0\n lowpowermode\t\t0'
+
+#           name                                   expected          batt        settings
+readings_check 'AC, charging, 70%                → AC Power, 70'     '||AC Power|70'    "$ac_70"    ''
+readings_check 'AC, charged, 85%                 → AC Power, 85'     '||AC Power|85'    "$ac_85"    ''
+readings_check 'battery, 14%                     → Battery Power, 14' '||Battery Power|14' "$batt_14" ''
+readings_check 'battery, no percentage line      → percent empty'    '||Battery Power|' "$batt_nopct" ''
+readings_check 'SleepDisabled and low power on   → 1, 1'             '1|1||'            ''          "$settings_on"
+readings_check 'SleepDisabled and low power off  → 0, 0'             '0|0||'            ''          "$settings_off"
+readings_check 'pmset prints nothing             → all empty'        '|||'              ''          ''
 
 printf '\n\033[1minstaller\033[0m\n\n'
 
