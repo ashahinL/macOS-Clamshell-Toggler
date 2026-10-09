@@ -5,22 +5,22 @@ import ServiceManagement
 
 /// Mirrors `clamshell json`.
 struct Status: Decodable {
-    let version: String
-    let mode: String
-    let displays: Int
-    let lidClosed: Bool
-    let onBattery: Bool
-    let sleepDisabled: Bool
-    let watcherRunning: Bool
-    let modeFile: String
-    let batteryPercent: Int?
-    let lowPowerMode: Bool
-    let floor: Int?
-    let timerMinutes: Int?
-    let until: Int?
-    let lpmCut: Bool
-    let lpmHold: Bool
-    let lastCut: String?
+    var version: String
+    var mode: String
+    var displays: Int
+    var lidClosed: Bool
+    var onBattery: Bool
+    var sleepDisabled: Bool
+    var watcherRunning: Bool
+    var modeFile: String
+    var batteryPercent: Int?
+    var lowPowerMode: Bool
+    var floor: Int?
+    var timerMinutes: Int?
+    var until: Int?
+    var lpmCut: Bool
+    var lpmHold: Bool
+    var lastCut: String?
 }
 
 enum CLI {
