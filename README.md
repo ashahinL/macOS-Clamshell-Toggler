@@ -319,7 +319,7 @@ simply full — hidden items are common on notched displays.
 bin/clamshell                     CLI and watcher — all the state lives here
 launchd/local.clamshell.plist.in  LaunchDaemon template (__MODE_FILE__ is
                                   substituted at install time)
-gui/Clamshell/main.swift          menu bar app (Swift/AppKit) — a view only
+gui/Clamshell/*.swift             menu bar app (Swift/AppKit) — a view only
 gui/Clamshell/Info.plist          app bundle metadata
 scripts/install.sh                installer
 scripts/uninstall.sh              uninstaller, installed as clamshell-uninstall

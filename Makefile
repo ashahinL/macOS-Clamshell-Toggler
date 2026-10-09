@@ -9,7 +9,7 @@ APP_NAME    := Clamshell
 BUILD_DIR   := build
 APP_BUNDLE  := $(BUILD_DIR)/$(APP_NAME).app
 APP_BIN     := $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)
-SWIFT_SRC   := gui/Clamshell/main.swift
+SWIFT_SRC   := $(wildcard gui/Clamshell/*.swift)
 INFO_PLIST  := gui/Clamshell/Info.plist
 APP_DEST    := /Applications/$(APP_NAME).app
 
