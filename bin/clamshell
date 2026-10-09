@@ -12,7 +12,7 @@
 
 set -uo pipefail
 
-readonly VERSION='1.1.0'
+readonly VERSION='1.2.0'
 # Overridable so the tests can exercise the code paths that log. Note that a
 # redirection bash cannot open makes it skip the command entirely, so an
 # unwritable log would silently stop pmset from being called at all.
@@ -766,6 +766,15 @@ ${C_BOLD}COMMANDS${C_RESET}
                  What the built-in screen does once the lid is shut with
                  no display attached: ${C_BOLD}off${C_RESET} goes dark ${C_DIM}(default)${C_RESET}, ${C_BOLD}on${C_RESET} stays
                  lit. ${C_DIM}Prints the current setting when given no argument.${C_RESET}
+  floor [N|off]  Always Awake turns off on battery at N% or lower
+                 (5-50, default 15).
+                 ${C_DIM}Prints the current setting when given no argument.${C_RESET}
+  timer [off|1h|2h|MIN]
+                 Always Awake turns off this long after you switch it on.
+                 ${C_DIM}Prints the current setting when given no argument.${C_RESET}
+  lpm [on|off]   Always Awake turns off when Low Power Mode is on
+                 (default off).
+                 ${C_DIM}Prints the current setting when given no argument.${C_RESET}
   log [n]        Show the last n state changes (default 20)
   help           Show this message
   version        Show the version

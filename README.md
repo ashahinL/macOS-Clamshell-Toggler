@@ -3,7 +3,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Platform: macOS](https://img.shields.io/badge/Platform-macOS%2011%2B-brightgreen.svg)
 ![Architecture: Apple Silicon](https://img.shields.io/badge/Arch-Apple%20Silicon-orange.svg)
-![Version: 1.1.0](https://img.shields.io/badge/Version-1.1.0-purple.svg)
+![Version: 1.2.0](https://img.shields.io/badge/Version-1.2.0-purple.svg)
 
 Use your Mac with the lid closed **on battery power** — no charger required.
 
@@ -41,6 +41,7 @@ to sleep, and a warning triangle if the watcher has stopped.
 - **No password after install** — mode switching writes a file in your home directory
 - **Screen off, machine on** — the built-in panel sleeps behind a closed lid
   instead of staying lit, while wifi, audio and running jobs carry on
+- **Ends itself** — Always Awake turns off at a battery floor, after a timer, or (optionally) in Low Power Mode, and puts a shut Mac to sleep
 - **Fails safe** — if anything is unreadable or unexpected, normal sleep wins
 - **Survives reboots** — runs as a `launchd` system daemon
 - **Tiny** — one shell script and one Swift file; no daemons beyond launchd, no frameworks
@@ -59,8 +60,11 @@ external display attached?
         └── no  ──►  pmset -b disablesleep 0   ──►  lid closed = sleeps (normal)
 ```
 
-A small root daemon flips the flag whenever the state changes. `-b` scopes the
-change to battery power, so behaviour on AC is untouched.
+A small root daemon flips the flag whenever the state changes. `-b` does not limit the
+change to battery power. `SleepDisabled` is one system-wide flag, so it reads
+`1` on AC too, and `on` keeps an AC Mac awake with the lid shut. On AC, `auto`
+changes nothing in practice: it only sets the flag while a display is attached,
+and macOS keeps an AC Mac awake in that case anyway.
 
 The two inputs are polled at different rates, because they have different
 urgency. The chosen mode is re-read **every second** — a mode switch is a
@@ -156,18 +160,25 @@ clamshell auto       # awake with lid closed, only while a display is attached
 clamshell on         # awake with lid closed, display or not
 clamshell off        # normal macOS behaviour
 clamshell screen on  # keep the built-in screen lit behind a closed lid
+clamshell floor 20   # turn off on battery at 20% or lower
+clamshell timer 2h   # turn off two hours after switching on
+clamshell lpm on     # turn off while Low Power Mode is on
 clamshell log        # recent state changes
 clamshell json       # machine-readable status
 ```
 
 ```
 $ clamshell
-clamshell 1.0.0
+clamshell 1.2.0
 
   mode                auto
   external displays   1
   lid                 closed
   power               Battery Power
+  battery             42%
+  battery floor       15%
+  auto-off timer      off
+  low power mode      off
   sleep disabled      1
   screen when closed  off
   watcher             running (pid 6108)
@@ -181,13 +192,26 @@ clamshell 1.0.0
 | Mode | Display attached | No display | Use it for |
 |---|---|---|---|
 | `auto` *(default)* | stays awake | **sleeps** | Everyday desk use |
-| `on` | stays awake | stays awake, screen off | Headless jobs — a long build or download with the lid shut |
+| `on` | stays awake | stays awake, screen off, until a cutoff | Headless jobs — a long build or download with the lid shut |
 | `off` | sleeps | sleeps | Temporarily restoring stock behaviour |
 
 > **`on` keeps the Mac awake with no display attached.** The built-in screen is
 > put to sleep once the lid has been shut for a few seconds, so it is not also
 > burning backlight — but the machine itself is still running. In a closed bag
 > that is battery drain and heat. Switch back to `auto` when you are done.
+> Set a [cutoff](#cutoffs) below to have it turn itself off.
+
+### Cutoffs
+
+A cutoff turns `on` (Always Awake) off by itself. Cutoffs only apply while the mode is `on`.
+
+| Cutoff | Default | Command | When it fires |
+|---|---|---|---|
+| Battery floor | 15% | `clamshell floor [N\|off]` | On battery, at or below N% on two polls in a row (about 10 seconds). N is 5 to 50. A plugged-in Mac never trips it. |
+| Auto-off timer | off | `clamshell timer [off\|1h\|2h\|MIN]` | This long after `on` is set. MIN is 1 to 1440 minutes. It fires on AC too. |
+| Low Power Mode | off | `clamshell lpm [on\|off]` | On battery, with Low Power Mode on for two polls in a row. |
+
+**What happens when one fires.** The mode is set to `off` and the sleep flag is cleared. A shut lid with no external display is then put to sleep, once the lid has read shut on two polls in a row. An open lid is left alone, and so is a Mac with a monitor attached. Plugging in afterwards does not turn `on` back on. The auto-off timer is a file the root watcher enforces, so quitting the menu app or rebooting does not cancel it.
 
 Switching modes never requires a password: the mode lives in
 `~/.config/clamshell/mode`, and the root watcher reads it.
@@ -240,7 +264,9 @@ Expected. macOS decides whether to sleep at the moment the lid closes; clearing
 the flag afterwards does not retroactively trigger that decision, and nothing
 re-evaluates until the next lid event. Open and close the lid and it sleeps.
 Forcing it would mean calling `pmset sleepnow` behind your back, which is a
-worse surprise than the wait.
+worse surprise than the wait. Cutoffs are the exception: when one fires with the lid
+shut on two polls in a row and no monitor attached, the watcher does call
+`pmset sleepnow`.
 
 **The screen stays lit behind a closed lid.** This only applies with no external
 display attached, since `pmset displaysleepnow` would take a monitor down with
