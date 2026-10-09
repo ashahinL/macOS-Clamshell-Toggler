@@ -11,6 +11,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private let popover = NSPopover()
     private var lastClose = Date.distantPast
+    /// Bumped on every change from the panel, so a status read that started
+    /// before it is dropped instead of undoing it.
+    private var edits = 0
     private let model = PanelModel(state: PanelState(
         cliInstalled: false, status: nil, loginOn: false, loginNeedsApproval: false, haveLog: false
     ))
@@ -90,12 +93,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // MARK: State
 
     private func refresh() {
+        let started = edits
         probe.async { [weak self] in
             let fresh = CLI.status()
             DispatchQueue.main.async {
-                self?.status = fresh
-                self?.noteCut(fresh)
-                self?.apply()
+                guard let self, self.edits == started else { return }
+                self.status = fresh
+                self.noteCut(fresh)
+                self.apply()
             }
         }
     }
@@ -198,6 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         PanelActions(
             setMode: { [weak self] mode in
                 self?.status?.mode = mode
+                self?.edits += 1
                 self?.apply()
                 self?.probe.async {
                     CLI.set([mode])
@@ -216,6 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             },
             setTimer: { [weak self] value in
                 self?.status?.timerMinutes = value == "off" ? nil : Int(value)
+                self?.status?.until = nil
                 self?.change(["timer", value])
             },
             setLowPowerMode: { [weak self] on in
@@ -239,6 +246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func change(_ args: [String]) {
+        edits += 1
         apply()
         probe.async { [weak self] in
             CLI.set(args)
