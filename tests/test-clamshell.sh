@@ -236,10 +236,22 @@ cut_dir="$(mktemp -d)"
 # Runs maybe_cut `polls` times against a real mode file in a temp dir. pmset
 # and sudo are stubs; sudo still runs the command, as the current user, so the
 # writes really happen. `pct` is a number, or `none` for a line without one.
+# Low Power Mode inputs come in as env vars, so existing calls stay as they are:
+#   CUT_LPM      content of the `lpm` file (unset → no file)
+#   CUT_HOLD_AT  mtime of an `lpm-hold` file, epoch seconds (unset → no file)
+#   CUT_LP       lowpowermode value in the `pmset -g` output (default 0)
+#   CUT_BOOT     what boot_time prints, epoch seconds (none → nothing; default an hour ago)
 cut_run() { # mode source pct floor lid displays polls [until [timer [lid-streak]]]
 	local mode="$1" src="$2" pct="$3" floor="$4" until_v="${8:-}" timer_v="${9:-}"
 	export cut_lid="$5" cut_disp="$6" cut_polls="$7" cut_src="$src" cut_pct="$pct" cut_streak="${10:-0}"
-	rm -f "$cut_dir/mode" "$cut_dir/floor" "$cut_dir/last-cut" "$cut_dir/until" "$cut_dir/timer"
+	export cut_lp="${CUT_LP:-0}" cut_boot="${CUT_BOOT:-$(( $(date +%s) - 3600 ))}"
+	rm -f "$cut_dir/mode" "$cut_dir/floor" "$cut_dir/last-cut" "$cut_dir/until" "$cut_dir/timer" \
+		"$cut_dir/lpm" "$cut_dir/lpm-hold"
+	[[ -z "${CUT_LPM:-}" ]] || printf '%s\n' "$CUT_LPM" > "$cut_dir/lpm"
+	if [[ -n "${CUT_HOLD_AT:-}" ]]; then
+		: > "$cut_dir/lpm-hold"
+		touch -t "$(date -r "$CUT_HOLD_AT" +%Y%m%d%H%M.%S)" "$cut_dir/lpm-hold"
+	fi
 	printf '%s\n' "$mode" > "$cut_dir/mode"
 	[[ -z "$floor" ]] || printf '%s\n' "$floor" > "$cut_dir/floor"
 	[[ -z "$until_v" ]] || printf '%s\n' "$until_v" > "$cut_dir/until"
@@ -251,6 +263,7 @@ cut_run() { # mode source pct floor lid displays polls [until [timer [lid-streak
 		# shellcheck disable=SC1090
 		source "$CLAMSHELL" >/dev/null
 		lid_is_closed() { return "$cut_lid"; }
+		boot_time() { [[ "$cut_boot" == none ]] || printf '%s' "$cut_boot"; }
 		# Read by maybe_cut in the sourced script.
 		# shellcheck disable=SC2034
 		CUT_LID_STREAK="$cut_streak"
@@ -260,12 +273,14 @@ cut_run() { # mode source pct floor lid displays polls [until [timer [lid-streak
 				printf "Now drawing from '%s'\n" "$cut_src"
 				[[ "$cut_pct" == none ]] ||
 					printf ' -InternalBattery-0 (id=1)\t%s%%; discharging; 0:40 remaining present: true\n' "$cut_pct"
+			elif [[ "${1:-}" == -g && -z "${2:-}" ]]; then
+				printf ' SleepDisabled\t\t0\n lowpowermode\t\t%s\n' "$cut_lp"
 			else
 				printf 'pmset %s\n' "$*" >> "$cut_dir/calls"
 			fi
 		}
 		sudo() { printf 'sudo %s\n' "$*" >> "$cut_dir/calls"; shift 3; "$@"; }
-		for ((i = 0; i < cut_polls; i++)); do maybe_cut "$cut_disp"; done
+		for ((i = 0; i < cut_polls; i++)); do read_power_settings; maybe_cut "$cut_disp"; done
 	)
 }
 
@@ -438,6 +453,104 @@ timer_reset off 60 "$((now + 600))"
 expect_eq 'clamshell timer shows plain minutes while not on' 60 "$(tcli show_timer)"
 timer_reset on
 expect_eq 'clamshell timer shows off with no timer' off "$(tcli show_timer)"
+
+printf '\n\033[1mlow power mode\033[0m  (an opt-in cutoff, and the hold that overrides it)\n\n'
+
+touch_hr=$(( now - 3600 ))
+hold_gone() { [[ -e "$cut_dir/lpm-hold" ]] && echo there || echo gone; }
+hold_rm_calls() { /usr/bin/grep -c "^sudo -n -u #$(id -u) /bin/rm -f .*/lpm-hold$" "$cut_dir/calls" || true; }
+
+CUT_LPM=on CUT_LP=1 cut_run on 'Battery Power' 80 '' 0 0 2
+expect_eq 'lpm on, low power on, battery, 2 polls, lid shut → cut, then sleep' "$tripped" "$(cut_summary)"
+expect_eq 'the cut is logged with reason lpm' 1 \
+	"$(/usr/bin/grep -c 'cut reason=lpm percent=80$' "$cut_dir/log" || true)"
+CUT_LPM=on CUT_LP=1 cut_run on 'Battery Power' 80 '' 0 0 1
+expect_eq 'one poll → no cut' "$quiet" "$(cut_summary)"
+
+CUT_LPM=on CUT_LP=1 CUT_HOLD_AT=$now CUT_BOOT=$touch_hr cut_run on 'Battery Power' 80 '' 0 0 5
+expect_eq 'hold present → no cut' "$quiet" "$(cut_summary)"
+expect_eq 'a valid hold is left in place' there "$(hold_gone)"
+
+CUT_LPM=on CUT_LP=0 CUT_HOLD_AT=$now CUT_BOOT=$touch_hr cut_run on 'Battery Power' 80 '' 0 0 2
+expect_eq 'hold, low power off → hold deleted, mode stays on' "$quiet gone" "$(cut_summary) $(hold_gone)"
+expect_eq 'the hold was deleted through the sudo stub' 1 "$(hold_rm_calls)"
+
+CUT_LPM=on CUT_LP=1 CUT_HOLD_AT=$(( now - 7200 )) CUT_BOOT=$touch_hr cut_run on 'Battery Power' 80 '' 0 0 3
+expect_eq 'hold older than boot → deleted, and the check cuts' "$tripped gone" "$(cut_summary) $(hold_gone)"
+
+CUT_LPM=on CUT_LP=1 CUT_HOLD_AT=$now CUT_BOOT=none cut_run on 'Battery Power' 80 '' 0 0 1
+expect_eq 'boot time unreadable → hold deleted' "$quiet gone" "$(cut_summary) $(hold_gone)"
+
+CUT_LP=1 cut_run on 'Battery Power' 80 '' 0 0 5
+expect_eq 'no lpm file (default off), low power on → no cut' "$quiet" "$(cut_summary)"
+CUT_LPM=on CUT_LP=1 cut_run on 'AC Power' 80 '' 0 0 5
+expect_eq 'lpm on, low power on, AC → no cut' "$quiet" "$(cut_summary)"
+
+CUT_LPM=on CUT_LP=1 CUT_HOLD_AT=$now CUT_BOOT=$touch_hr cut_run on 'Battery Power' 10 '' 0 0 2
+expect_eq 'hold present, 10% → the floor still cuts' "$tripped" "$(cut_summary)"
+expect_eq 'the cut reason is floor' 1 "$(/usr/bin/grep -c 'cut reason=floor percent=10$' "$cut_dir/log" || true)"
+
+CUT_LPM=on CUT_LP=1 CUT_HOLD_AT=$now CUT_BOOT=$touch_hr cut_run auto 'Battery Power' 80 '' 0 0 3
+expect_eq 'mode auto, hold present → hold deleted, no cut' 'mode=auto cuts=0 pmset=[] gone' \
+	"$(cut_summary) $(hold_gone)"
+
+# CLI side. pmset is stubbed to report the given lowpowermode.
+lpm_cli() { # lowpowermode command...
+	local lp="$1"; shift
+	local cmd=("$@")   # `set -- version` below replaces $@
+	(
+		set -- version
+		export CLAMSHELL_MODE_FILE="$cut_dir/mode"
+		# shellcheck disable=SC1090
+		source "$CLAMSHELL" >/dev/null
+		watcher_pid() { :; }
+		pmset() { printf ' SleepDisabled\t\t0\n lowpowermode\t\t%s\n' "$lp"; }
+		"${cmd[@]}"
+	)
+}
+lpm_reset() { # [lpm [stale-hold]]
+	rm -f "$cut_dir/lpm" "$cut_dir/lpm-hold" "$cut_dir/until" "$cut_dir/timer"
+	printf 'auto\n' > "$cut_dir/mode"
+	[[ -z "${1:-}" ]] || printf '%s\n' "$1" > "$cut_dir/lpm"
+	[[ -z "${2:-}" ]] || : > "$cut_dir/lpm-hold"
+}
+
+lpm_reset on
+lpm_cli 1 write_mode on >/dev/null
+expect_eq 'CLI: lpm on, on while low power is on → hold exists' there "$(hold_gone)"
+lpm_reset on stale
+lpm_cli 0 write_mode on >/dev/null
+expect_eq 'CLI: lpm on, on while low power is off → no hold, stale one removed' gone "$(hold_gone)"
+lpm_reset off
+lpm_cli 1 write_mode on >/dev/null
+expect_eq 'CLI: lpm off, on while low power is on → no hold' gone "$(hold_gone)"
+lpm_reset on stale
+lpm_cli 1 write_mode auto >/dev/null
+expect_eq 'CLI: auto drops a hold' gone "$(hold_gone)"
+
+lpm_reset
+tcli write_lpm banana >/dev/null 2>&1; rc_lpm=$?
+expect_eq 'write_lpm banana is refused' 'nonzero off' \
+	"$( ((rc_lpm)) && printf nonzero || printf zero ) $(tcli read_lpm)"
+printf 'banana\n' > "$cut_dir/lpm"
+expect_eq 'a garbage lpm file reads as off' off "$(tcli read_lpm)"
+tcli write_lpm on >/dev/null
+expect_eq 'write_lpm on is saved' on "$(tcli read_lpm)"
+expect_eq 'clamshell lpm prints the setting' on "$(CLAMSHELL_MODE_FILE="$cut_dir/mode" "$CLAMSHELL" lpm)"
+
+boot_check() { # name expected sysctl-output
+	local name="$1" expect="$2" fake="$3"
+	expect_eq "$name" "$expect" "$(
+		set -- version
+		# shellcheck disable=SC1090
+		source "$CLAMSHELL" >/dev/null
+		sysctl() { printf '%s' "$fake"; }
+		boot_time
+	)"
+}
+boot_check 'boot_time reads the sec field' 1790951856 \
+	'{ sec = 1790951856, usec = 561166 } Fri Oct  2 17:37:36 2026'
+boot_check 'boot_time prints nothing when it cannot parse' '' 'garbage'
 
 rm -rf "$cut_dir"
 
