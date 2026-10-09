@@ -149,11 +149,19 @@ read_mode() {
 }
 
 write_mode() {
-	local mode="$1" dir
+	local mode="$1" dir f
 	dir="$(dirname "$MODE_FILE")"
 	mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
 	printf '%s\n' "$mode" > "$MODE_FILE" 2>/dev/null ||
 		die "cannot write $MODE_FILE"
+
+	# The clock starts now. `auto` and `off` drop any deadline but keep the saved
+	# length, so the next `on` starts a fresh one.
+	if [[ "$mode" == on && "$(read_timer)" != off ]]; then
+		arm_until "$(read_timer)"
+	else
+		f="$(config_path until)" && rm -f "$f"
+	fi
 
 	printf '%smode → %s%s%s\n' "$C_DIM" "$C_BOLD" "$mode" "$C_RESET"
 	case "$mode" in
@@ -234,6 +242,90 @@ write_floor() {
 		printf 'Always Awake no longer turns itself off when the battery runs low.\n'
 	else
 		printf 'Always Awake turns off on battery at %s%% or lower.\n' "$v"
+	fi
+}
+
+# Minutes after which `on` turns itself off.
+#   off, or an integer 1-1440; anything else reads as off, so a garbage file can
+#   never invent a deadline
+read_timer() {
+	local f v=''
+	f="$(config_path timer)" || { printf 'off'; return; }
+	[[ -r "$f" ]] && { read -r v < "$f" || true; } 2>/dev/null
+	v=${v//[[:space:]]/}
+	if [[ "$v" =~ ^[0-9]{1,4}$ ]] && (( 10#$v >= 1 && 10#$v <= 1440 )); then
+		printf '%s' "$((10#$v))"
+	else
+		printf 'off'
+	fi
+}
+
+# The deadline, in epoch seconds. Nothing if there is none, `bad` if the file is
+# there but is not a plain number.
+read_until() {
+	local f v=''
+	f="$(config_path until)" || return 0
+	[[ -e "$f" ]] || return 0
+	[[ -r "$f" ]] && { read -r v < "$f" || true; } 2>/dev/null
+	v=${v//[[:space:]]/}
+	if [[ "$v" =~ ^[0-9]{1,15}$ ]]; then printf '%s' "$v"; else printf 'bad'; fi
+}
+
+# CLI side only. Written and renamed, so the watcher never reads half a number.
+arm_until() {
+	local f dir
+	f="$(config_path until)" || die "cannot resolve the config directory"
+	dir="$(dirname "$f")"
+	mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
+	printf '%s\n' "$(( $(date +%s) + 10#$1 * 60 ))" > "$f.tmp" 2>/dev/null ||
+		die "cannot write $f.tmp"
+	mv -f "$f.tmp" "$f" 2>/dev/null || die "cannot write $f"
+}
+
+write_timer() {
+	local v="$1" f dir
+	case "$v" in
+		off) ;;
+		1h)  v=60 ;;
+		2h)  v=120 ;;
+		*)
+			if [[ "$v" =~ ^[0-9]{1,4}$ ]] && (( 10#$v >= 1 && 10#$v <= 1440 )); then
+				v=$((10#$v))
+			else
+				die "timer takes off, 1h, 2h, or minutes (1-1440)"
+			fi
+			;;
+	esac
+	f="$(config_path timer)" || die "cannot resolve the config directory"
+	dir="$(dirname "$f")"
+	mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
+	printf '%s\n' "$v" > "$f" 2>/dev/null || die "cannot write $f"
+
+	if [[ "$v" == off ]]; then
+		f="$(config_path until)" && rm -f "$f"
+	elif [[ "$(read_mode)" == on ]]; then
+		arm_until "$v"
+	fi
+
+	printf '%sauto-off timer → %s%s%s\n' "$C_DIM" "$C_BOLD" "$v" "$C_RESET"
+	if [[ "$v" == off ]]; then
+		printf 'Always Awake no longer turns itself off after a set time.\n'
+	elif [[ "$(read_mode)" == on ]]; then
+		printf 'Always Awake turns off in %s minutes.\n' "$v"
+	else
+		printf 'Always Awake turns off %s minutes after you switch it on.\n' "$v"
+	fi
+}
+
+show_timer() {
+	local t u now
+	t="$(read_timer)"
+	if [[ "$t" == off ]]; then printf 'off\n'; return; fi
+	u="$(read_until)"; now=$(date +%s)
+	if [[ "$(read_mode)" == on && "$u" =~ ^[0-9]+$ ]] && (( 10#$u > now )); then
+		printf '%s (%s min left)\n' "$t" "$(( (10#$u - now + 59) / 60 ))"
+	else
+		printf '%s\n' "$t"
 	fi
 }
 
@@ -393,7 +485,7 @@ held_by_cut() {
 # Cutoffs apply only while the mode is `on`; `auto` is someone at a desk.
 # Each one needs LID_CONFIRM polls in a row, so one bad read cannot end a job.
 maybe_cut() {
-	local displays="$1" floor
+	local displays="$1" floor until_at f
 
 	if [[ "$(read_mode)" != on ]]; then
 		CUT_LID_STREAK=0
@@ -406,7 +498,16 @@ maybe_cut() {
 
 	read_battery
 
-	# (deadline check goes here)
+	# A reached deadline cuts even on AC, and with no streak: a clock comparison
+	# has no flaky reading. An unreadable one cuts too; the CLI writes it
+	# atomically, so that only comes from a hand edit.
+	until_at=$(read_until)
+	if [[ "$until_at" == bad ]] ||
+	   { [[ -n "$until_at" ]] && (( 10#$until_at <= $(date +%s) )); }; then
+		f=$(config_path timer) && write_as_owner "$f" off
+		cut_off timer "$PM_PERCENT" "$displays"
+		return
+	fi
 
 	# An unknown power source never cuts, it could be AC. An unreadable percent
 	# on battery counts as under the floor.
@@ -595,6 +696,12 @@ case "${1:-status}" in
 		case "${2:-}" in
 			'') printf '%s\n' "$(read_floor)" ;;
 			*)  write_floor "$2" ;;
+		esac
+		;;
+	timer)
+		case "${2:-}" in
+			'') show_timer ;;
+			*)  write_timer "$2" ;;
 		esac
 		;;
 	log)             cmd_log "${2:-20}" ;;

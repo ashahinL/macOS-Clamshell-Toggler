@@ -236,12 +236,14 @@ cut_dir="$(mktemp -d)"
 # Runs maybe_cut `polls` times against a real mode file in a temp dir. pmset
 # and sudo are stubs; sudo still runs the command, as the current user, so the
 # writes really happen. `pct` is a number, or `none` for a line without one.
-cut_run() { # mode source pct floor lid displays polls
-	local mode="$1" src="$2" pct="$3" floor="$4"
-	export cut_lid="$5" cut_disp="$6" cut_polls="$7" cut_src="$src" cut_pct="$pct"
-	rm -f "$cut_dir/mode" "$cut_dir/floor" "$cut_dir/last-cut" "$cut_dir/until"
+cut_run() { # mode source pct floor lid displays polls [until [timer [lid-streak]]]
+	local mode="$1" src="$2" pct="$3" floor="$4" until_v="${8:-}" timer_v="${9:-}"
+	export cut_lid="$5" cut_disp="$6" cut_polls="$7" cut_src="$src" cut_pct="$pct" cut_streak="${10:-0}"
+	rm -f "$cut_dir/mode" "$cut_dir/floor" "$cut_dir/last-cut" "$cut_dir/until" "$cut_dir/timer"
 	printf '%s\n' "$mode" > "$cut_dir/mode"
 	[[ -z "$floor" ]] || printf '%s\n' "$floor" > "$cut_dir/floor"
+	[[ -z "$until_v" ]] || printf '%s\n' "$until_v" > "$cut_dir/until"
+	[[ -z "$timer_v" ]] || printf '%s\n' "$timer_v" > "$cut_dir/timer"
 	: > "$cut_dir/log"; : > "$cut_dir/calls"; : > "$cut_dir/batt"
 	(
 		set -- version
@@ -249,6 +251,9 @@ cut_run() { # mode source pct floor lid displays polls
 		# shellcheck disable=SC1090
 		source "$CLAMSHELL" >/dev/null
 		lid_is_closed() { return "$cut_lid"; }
+		# Read by maybe_cut in the sourced script.
+		# shellcheck disable=SC2034
+		CUT_LID_STREAK="$cut_streak"
 		pmset() {
 			if [[ "${1:-}" == -g && "${2:-}" == batt ]]; then
 				echo x >> "$cut_dir/batt"
@@ -264,11 +269,11 @@ cut_run() { # mode source pct floor lid displays polls
 	)
 }
 
-# One line: mode, how many floor cuts were logged, the pmset writes in order.
+# One line: mode, how many cuts were logged, the pmset writes in order.
 cut_summary() {
 	printf 'mode=%s cuts=%s pmset=[%s]' \
 		"$(tr -d '[:space:]' < "$cut_dir/mode")" \
-		"$(/usr/bin/grep -c 'cut reason=floor' "$cut_dir/log" || true)" \
+		"$(/usr/bin/grep -c 'cut reason=' "$cut_dir/log" || true)" \
 		"$(/usr/bin/grep '^pmset ' "$cut_dir/calls" | sed 's/^pmset //' | paste -sd';' -)"
 }
 
@@ -339,6 +344,100 @@ held="$(
 	printf '%s %s [%s]' "$a" "$b" "$CUT_STAMP"
 )"
 expect_eq 'a cut holds until the mode file changes' 'true false []' "$held"
+
+printf '\n\033[1mauto-off timer\033[0m  (a deadline ends Always Awake by itself)\n\n'
+
+now=$(date +%s)
+
+# Watcher side. A deadline cuts with no streak of its own, but the sleepnow still
+# needs the lid to have read shut on earlier polls, so prime that (last argument).
+cut_run on 'Battery Power' 80 '' 0 0 1 "$((now - 10))" 60 1
+expect_eq 'deadline passed, 80%, lid shut, no monitor → cut, then sleep' "$tripped" "$(cut_summary)"
+expect_eq 'the timer cut is logged with its reason' 1 \
+	"$(/usr/bin/grep -c 'cut reason=timer percent=80$' "$cut_dir/log" || true)"
+expect_eq 'the timer file is set to off' 'off' "$(tr -d '[:space:]' < "$cut_dir/timer")"
+expect_eq 'until is gone' 'gone' "$([[ -e "$cut_dir/until" ]] && echo there || echo gone)"
+
+cut_run on 'AC Power' 80 '' 0 1 1 "$((now - 10))" 60 1
+expect_eq 'deadline passed on AC, one monitor → cut, no sleepnow' \
+	'mode=off cuts=1 pmset=[-b disablesleep 0]' "$(cut_summary)"
+cut_run on 'Battery Power' 80 '' 0 0 3 "$((now + 3600))" 60
+expect_eq 'deadline an hour away → no cut' "$quiet" "$(cut_summary)"
+cut_run on 'Battery Power' 80 '' 0 0 1 garbage 60 1
+expect_eq 'garbage until → cut (fail-safe)' "$tripped" "$(cut_summary)"
+cut_run auto 'Battery Power' 80 '' 0 0 3 "$((now - 10))" 60
+expect_eq 'auto mode ignores a stale deadline' 'mode=auto cuts=0 pmset=[]' "$(cut_summary)"
+
+# CLI side, in the same temp dir. watcher_pid is stubbed so write_mode does not pgrep.
+tcli() {
+	local cmd=("$@")   # `set -- version` below replaces $@
+	(
+		set -- version
+		export CLAMSHELL_MODE_FILE="$cut_dir/mode"
+		# shellcheck disable=SC1090
+		source "$CLAMSHELL" >/dev/null
+		watcher_pid() { :; }
+		"${cmd[@]}"
+	)
+}
+timer_reset() { # mode [timer [until]]
+	rm -f "$cut_dir/timer" "$cut_dir/until" "$cut_dir/until.tmp"
+	printf '%s\n' "$1" > "$cut_dir/mode"
+	[[ -z "${2:-}" ]] || printf '%s\n' "$2" > "$cut_dir/timer"
+	[[ -z "${3:-}" ]] || printf '%s\n' "$3" > "$cut_dir/until"
+}
+# "ok" when until holds a time $2 seconds from now, give or take 10.
+until_near() {
+	local u; u=$(cat "$cut_dir/until" 2>/dev/null)
+	[[ "$u" =~ ^[0-9]+$ ]] && (( u >= $(date +%s) + $1 - 10 && u <= $(date +%s) + $1 + 10 )) &&
+		echo ok || echo "got [$u]"
+}
+has_until() { [[ -e "$cut_dir/until" ]] && echo there || echo gone; }
+
+timer_reset off 60
+tcli write_mode on >/dev/null
+expect_eq 'timer 60, on → until is an hour ahead' ok "$(until_near 3600)"
+expect_eq 'no half-written until.tmp is left behind' gone "$([[ -e "$cut_dir/until.tmp" ]] && echo there || echo gone)"
+
+timer_reset on 60 "$((now + 1000))"
+tcli write_mode off >/dev/null
+expect_eq 'timer 60, off → until gone, timer kept' 'gone 60' \
+	"$(has_until) $(tcli read_timer)"
+
+timer_reset off banana
+tcli write_mode on >/dev/null
+expect_eq 'garbage timer, on → no until, timer reads off' 'gone off' \
+	"$(has_until) $(tcli read_timer)"
+
+timer_reset auto 60 "$((now - 1000))"
+tcli write_mode auto >/dev/null
+expect_eq 'auto removes a stale until' gone "$(has_until)"
+
+timer_reset off
+tcli write_timer 1h >/dev/null
+expect_eq 'timer 1h while off → saved as 60, no until' 'gone 60' "$(has_until) $(tcli read_timer)"
+tcli write_timer 2h >/dev/null
+expect_eq 'timer 2h is saved as 120' 120 "$(tcli read_timer)"
+
+timer_reset on
+tcli write_timer 90 >/dev/null
+expect_eq 'timer 90 while on → until about 90 minutes ahead' ok "$(until_near 5400)"
+tcli write_timer off >/dev/null
+expect_eq 'timer off → until gone, timer off' 'gone off' "$(has_until) $(tcli read_timer)"
+
+tcli write_timer 0 >/dev/null 2>&1; rc0=$?
+tcli write_timer 1441 >/dev/null 2>&1; rc1441=$?
+tcli write_timer soon >/dev/null 2>&1; rcsoon=$?
+expect_eq 'timer 0, 1441 and a word are refused' 'nonzero nonzero nonzero' \
+	"$( ((rc0)) && printf nonzero || printf zero ) $( ((rc1441)) && printf nonzero || printf zero ) $( ((rcsoon)) && printf nonzero || printf zero )"
+expect_eq 'a refused value leaves the saved timer alone' off "$(tcli read_timer)"
+
+timer_reset on 60 "$((now + 600))"
+expect_eq 'clamshell timer shows minutes left while on' '60 (10 min left)' "$(tcli show_timer)"
+timer_reset off 60 "$((now + 600))"
+expect_eq 'clamshell timer shows plain minutes while not on' 60 "$(tcli show_timer)"
+timer_reset on
+expect_eq 'clamshell timer shows off with no timer' off "$(tcli show_timer)"
 
 rm -rf "$cut_dir"
 
