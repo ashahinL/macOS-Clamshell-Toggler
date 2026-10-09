@@ -14,9 +14,12 @@ INFO_PLIST  := gui/Clamshell/Info.plist
 APP_DEST    := /Applications/$(APP_NAME).app
 
 SWIFTC      := swiftc
-SWIFTFLAGS  := -O
+SWIFTFLAGS  := -O -target arm64-apple-macos13.0
 
-.PHONY: all app test install install-cli install-app uninstall clean help
+PREVIEW_DIR := $(BUILD_DIR)/preview
+PREVIEW_SRC := gui/Clamshell/CLI.swift gui/Clamshell/Panel.swift gui/Preview/main.swift
+
+.PHONY: all app preview test install install-cli install-app uninstall clean help
 
 all: app
 
@@ -29,6 +32,12 @@ $(APP_BIN): $(SWIFT_SRC) $(INFO_PLIST)
 	$(SWIFTC) $(SWIFTFLAGS) -o $@ $(SWIFT_SRC)
 	@codesign --force --sign - $(APP_BUNDLE) 2>/dev/null || true
 	@echo "built $(APP_BUNDLE)"
+
+## Render the panel to PNGs in build/preview
+preview:
+	@mkdir -p $(PREVIEW_DIR)
+	$(SWIFTC) $(SWIFTFLAGS) -o $(PREVIEW_DIR)/render $(PREVIEW_SRC)
+	@$(PREVIEW_DIR)/render $(PREVIEW_DIR)
 
 ## Run the test suite
 test:
@@ -76,6 +85,7 @@ help:
 	@echo "clamshell — make targets"
 	@echo ""
 	@echo "  make                    build the menu bar app"
+	@echo "  make preview            render the panel to build/preview/*.png"
 	@echo "  make test               run the test suite"
 	@echo "  sudo make install       install CLI, watcher and app"
 	@echo "  sudo make install-cli   CLI and watcher only"

@@ -121,7 +121,7 @@ costs about 23 ms.
 
 ## Requirements
 
-- macOS 11 or later
+- macOS 13 or later
 - **Apple Silicon.** Developed and tested on an M4 running macOS 26. The display
   probe relies on the Apple Silicon display-coprocessor registry layout; Intel Macs
   expose displays differently and will likely need a different probe.

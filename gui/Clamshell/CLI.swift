@@ -67,7 +67,7 @@ enum CLI {
 
 // MARK: - Open at login
 
-/// `SMAppService` on macOS 13+, falling back to a plain LaunchAgent.
+/// `SMAppService`, falling back to a plain LaunchAgent when it throws.
 ///
 /// `SMAppService` is the right API — the entry shows up under System Settings →
 /// Login Items where people expect to manage it. But it can refuse for a
@@ -86,37 +86,30 @@ enum LoginItem {
     /// True once registered, including while macOS is still waiting for the
     /// user to approve it in System Settings.
     static var isEnabled: Bool {
-        if #available(macOS 13.0, *) {
-            switch SMAppService.mainApp.status {
-            case .enabled, .requiresApproval: return true
-            default: break
-            }
+        switch SMAppService.mainApp.status {
+        case .enabled, .requiresApproval: return true
+        default: break
         }
         return FileManager.default.fileExists(atPath: plistURL.path)
     }
 
     /// Registered, but macOS wants the user to confirm it first.
     static var needsApproval: Bool {
-        if #available(macOS 13.0, *) {
-            return SMAppService.mainApp.status == .requiresApproval
-        }
-        return false
+        SMAppService.mainApp.status == .requiresApproval
     }
 
     @discardableResult
     static func setEnabled(_ enabled: Bool) -> Bool {
-        if #available(macOS 13.0, *) {
-            do {
-                if enabled {
-                    try SMAppService.mainApp.register()
-                } else {
-                    try SMAppService.mainApp.unregister()
-                }
-                removeAgent()          // never leave both mechanisms armed
-                return true
-            } catch {
-                NSLog("clamshell: SMAppService failed (\(error)) — using LaunchAgent")
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
             }
+            removeAgent()          // never leave both mechanisms armed
+            return true
+        } catch {
+            NSLog("clamshell: SMAppService failed (\(error)) — using LaunchAgent")
         }
         return enabled ? writeAgent() : removeAgent()
     }
