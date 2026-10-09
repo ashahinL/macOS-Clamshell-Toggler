@@ -1,9 +1,6 @@
 import AppKit
 import SwiftUI
 
-// Renders the panel in sample states to PNGs, light and dark, so layout
-// changes can be checked without installing the app.
-//
 // Drawn through a real offscreen window with `cacheDisplay` rather than
 // SwiftUI's `ImageRenderer`, which draws AppKit-backed controls (pickers,
 // switches) as placeholder boxes.
@@ -48,7 +45,6 @@ let noActions = PanelActions(
     setLowPowerMode: { _ in }, setLogin: { _ in }, openLog: {}, quit: {}
 )
 
-/// The popover supplies the panel's background in the app; this stands in for it.
 final class Backdrop: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.windowBackgroundColor.setFill()
@@ -72,7 +68,6 @@ func render(_ state: PanelState, appearance: NSAppearance, to path: String) {
     window.backgroundColor = .windowBackgroundColor
     window.contentView = backdrop
     backdrop.layoutSubtreeIfNeeded()
-    // Lets SwiftUI create its AppKit-backed controls before the snapshot.
     RunLoop.main.run(until: Date().addingTimeInterval(0.2))
     backdrop.displayIfNeeded()
 

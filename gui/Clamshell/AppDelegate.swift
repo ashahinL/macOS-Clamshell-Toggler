@@ -2,8 +2,6 @@ import AppKit
 import Foundation
 import SwiftUI
 
-// MARK: - Status item and panel
-
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private var timer: Timer?
@@ -17,15 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         cliInstalled: false, status: nil, loginOn: false, loginNeedsApproval: false, haveLog: false
     ))
 
-    /// While the panel is shown the contents must be live; while it is shut
-    /// the only consumer is the icon.
     private static let openInterval: TimeInterval = 2
     private static let idleInterval: TimeInterval = 15
 
     private static let logPath = "/var/log/clamshell.log"
 
-    /// Status is read by spawning the CLI, so it happens off the main thread.
-    /// A panel that blocks on a subprocess while it is opening visibly hitches.
     private let probe = DispatchQueue(label: "local.clamshell.probe", qos: .utility)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -48,14 +42,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         startTicker(interval: Self.idleInterval)
     }
 
-    /// Poll fast only while someone is looking.
-    ///
-    /// `clamshell json` spawns half a dozen short-lived processes and costs
-    /// ~140ms. At the old flat 2s that ran forever, panel open or not — a
-    /// steady ~7% of a core spent on a reading nobody was reading, which is a
-    /// poor look for an app that exists to save battery. Closed, the only
-    /// consumer is the menu bar icon, and 15s is plenty for that.
-    ///
     /// Deliberately on `.common` rather than the default run loop mode: while
     /// a picker's pop-up menu is open AppKit runs in event-tracking mode, and
     /// a plain scheduled timer is starved for as long as it stays open.
@@ -72,8 +58,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         timer?.invalidate()
     }
 
-    // MARK: Panel
-
     /// A transient popover closes itself on the mouse-down of a click on the
     /// icon, and the button's action then fires on mouse-up. Without the
     /// time check that click would reopen the panel it was meant to close.
@@ -88,7 +72,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         refresh()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         NSApp.activate(ignoringOtherApps: true)
-        // Key, so the first click lands on a control and Esc reaches the popover.
         popover.contentViewController?.view.window?.makeKey()
     }
 
@@ -211,8 +194,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     // MARK: Actions
 
-    /// Each setter shows the change at once by editing the cached status; the
-    /// next refresh replaces it with what the CLI actually reports.
     private func makeActions() -> PanelActions {
         PanelActions(
             setMode: { [weak self] mode in
@@ -257,7 +238,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         )
     }
 
-    /// No watcher round trip, unlike a mode change, so one refresh is enough.
     private func change(_ args: [String]) {
         apply()
         probe.async { [weak self] in

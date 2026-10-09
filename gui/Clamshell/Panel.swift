@@ -1,19 +1,17 @@
 import SwiftUI
 
-// MARK: - Panel
-
 struct PanelState {
     var cliInstalled: Bool
-    var status: Status?          // nil = `clamshell json` failed
+    var status: Status?
     var loginOn: Bool
     var loginNeedsApproval: Bool
     var haveLog: Bool
 }
 
 struct PanelActions {
-    var setMode: (String) -> Void          // "auto" | "on" | "off"
-    var setFloor: (String) -> Void         // "10" | "15" | "20" | "30" | "off" (CLI arg)
-    var setTimer: (String) -> Void         // "off" | "60" | "120"  (minutes, CLI arg)
+    var setMode: (String) -> Void
+    var setFloor: (String) -> Void
+    var setTimer: (String) -> Void
     var setLowPowerMode: (Bool) -> Void
     var setLogin: (Bool) -> Void
     var openLog: () -> Void
@@ -25,8 +23,6 @@ final class PanelModel: ObservableObject {
     init(state: PanelState) { self.state = state }
 }
 
-/// Renders `model.state` and reports changes through `actions`. Bindings
-/// never write to the model: what the panel shows always comes from the CLI.
 struct Panel: View {
     @ObservedObject var model: PanelModel
     let actions: PanelActions
@@ -40,7 +36,6 @@ struct Panel: View {
 
     private var state: PanelState { model.state }
 
-    /// Status from a CLI that is no longer installed is stale, so ignore it.
     private var status: Status? { state.cliInstalled ? state.status : nil }
 
     var body: some View {
@@ -55,8 +50,6 @@ struct Panel: View {
         .padding(14)
         .frame(width: 300, alignment: .leading)
     }
-
-    // MARK: Sections
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -156,8 +149,6 @@ struct Panel: View {
         }
     }
 
-    // MARK: Pieces
-
     private func row<Control: View>(_ title: String,
                                     @ViewBuilder control: () -> Control) -> some View {
         Row(title: title, control: control())
@@ -194,8 +185,6 @@ struct Panel: View {
         }
         .font(.callout)
     }
-
-    // MARK: Text
 
     private var headline: String {
         guard state.cliInstalled else { return "clamshell CLI not found" }
@@ -245,17 +234,10 @@ struct Panel: View {
         return status.until
     }
 
-    /// Clamped at zero: the watcher can take a few seconds to act after the
-    /// deadline.
     private static func countdown(until: Int, now: Date) -> String {
         let left = max(0, until - Int(now.timeIntervalSince1970))
         return String(format: "Off in %02d:%02d:%02d", left / 3600, left / 60 % 60, left % 60)
     }
-
-    // MARK: Choices
-
-    // A value set from the CLI (say a 25% floor) gets its own entry, so the
-    // picker shows the true setting rather than a wrong one or a blank.
 
     private var floorKey: String { status?.floor.map { String($0) } ?? "off" }
 
