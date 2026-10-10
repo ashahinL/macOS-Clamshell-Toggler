@@ -14,10 +14,8 @@ override is on **only while an external display is attached**, so a laptop shut
 in a bag still sleeps like it always did.
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-dark.png">
-    <img src="docs/images/panel-light.png" width="300" alt="The Clamshell panel: the mode picker (Automatic, Always Awake, Off), the auto-off timer, the battery floor, the Low Power Mode switch, and Open at Login.">
-  </picture>
+  <img src="docs/images/panel-light.png" width="300" alt="The Clamshell panel in light mode: the mode picker (Automatic, Always Awake, Off), the auto-off timer, the battery floor, the Low Power Mode switch, and Open at Login.">
+  <img src="docs/images/panel-dark.png" width="300" alt="The same panel in dark mode.">
 </p>
 
 ## Features
