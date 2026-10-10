@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.3.0] - 2026-10-09
+## [1.3.0] - 2026-10-10
 
 ### Changed
 - **A panel replaces the menu.** Clicking the menu bar icon opens a panel with
@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   backslash in it.
 
 ### Added
+- **A downloadable installer.** Each release has a `.pkg` that installs the app,
+  the CLI and the watcher. It is not signed, so macOS asks you to allow it once.
 - **`make preview`** draws the panel in five sample states, light and dark, to
   `build/preview/`.
 

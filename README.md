@@ -31,7 +31,7 @@ in a bag still sleeps like it always did.
 - **No password after install.** Switching modes writes a file in your home folder.
 - **Survives reboots.** The watcher runs as a `launchd` system daemon.
 - **Small and reversible.** One bash script does the work, and the app is only a
-  view onto it. `sudo make uninstall` restores stock behaviour.
+  view onto it. `sudo clamshell-uninstall` restores stock behaviour.
 
 ## Requirements
 
@@ -41,6 +41,22 @@ in a bag still sleeps like it always did.
   Macs expose displays differently and would need a different probe.
 
 ## Install
+
+### Download
+
+Download the `.pkg` from the
+[latest release](https://github.com/ashahinL/macOS-Clamshell-Toggler/releases/latest)
+and double-click it.
+
+The package is not signed with an Apple Developer ID, so macOS blocks it the
+first time. Open System Settings → Privacy & Security, scroll down, click
+**Open Anyway**, then confirm.
+
+The installer asks for your password once, because the watcher is a system
+daemon. It installs the app, the `clamshell` CLI and the watcher, then opens
+the app.
+
+### Build from source
 
 ```sh
 git clone https://github.com/ashahinL/macOS-Clamshell-Toggler.git
@@ -279,17 +295,18 @@ items are common on notched displays.
 ## Uninstall
 
 ```sh
-sudo make uninstall
-```
-
-Without the repo, run the copy the installer left behind:
-
-```sh
 sudo clamshell-uninstall
 ```
 
-Both unload the daemon, remove the installed files, and reset `disablesleep`
-to `0`.
+This works for a downloaded package and for a build from source. It unloads
+the daemon, removes the CLI, the watcher and the app, and resets
+`disablesleep` to `0`.
+
+From a source checkout you can also run:
+
+```sh
+sudo make uninstall
+```
 
 ## Develop
 
@@ -298,6 +315,7 @@ to `0`.
 ```sh
 make test       # the CLI and the watcher
 make preview    # draw the panel to build/preview/*.png, light and dark
+make pkg        # build the unsigned installer, build/Clamshell-<version>.pkg
 ```
 
 The suite stubs `ioreg`, `pmset`, and `sudo`, so it covers every state without
@@ -328,10 +346,13 @@ gui/Clamshell/Info.plist          app bundle metadata
 gui/Preview/main.swift            draws the panel to PNG (make preview)
 scripts/install.sh                installer
 scripts/uninstall.sh              uninstaller, installed as clamshell-uninstall
+pkg/distribution.xml              arm64 only, macOS 13 or later, no choices
+pkg/scripts/                      preinstall and postinstall
 tests/test-clamshell.sh           behaviour tests
 docs/images/                      README screenshots
-Makefile                          build, test, preview, install
+Makefile                          build, test, preview, install, pkg
 .github/workflows/ci.yml          runs the suite and shellcheck on macOS
+.github/workflows/release.yml     publishes the .pkg on a version tag
 ```
 
 The dependency runs one way. The app runs the CLI, the CLI writes the mode
