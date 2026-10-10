@@ -27,3 +27,18 @@ jobs:
         run: |
           plutil -lint build/Clamshell.app/Contents/Info.plist
           file build/Clamshell.app/Contents/MacOS/Clamshell
+
+      - name: Build the installer
+        run: |
+          set -euo pipefail
+          make pkg
+          rm -rf /tmp/clamshell-pkgcheck
+          pkgutil --expand-full build/Clamshell-*.pkg /tmp/clamshell-pkgcheck
+          test -f /tmp/clamshell-pkgcheck/clamshell-component.pkg/Scripts/Clamshell.app/Contents/MacOS/Clamshell
+          test -f /tmp/clamshell-pkgcheck/clamshell-component.pkg/Scripts/postinstall
+          test -f /tmp/clamshell-pkgcheck/clamshell-component.pkg/Scripts/scripts/install.sh
+          test -f /tmp/clamshell-pkgcheck/clamshell-component.pkg/Scripts/bin/clamshell
+          if [[ -n "$(find /tmp/clamshell-pkgcheck -name '._*')" ]]; then
+            find /tmp/clamshell-pkgcheck -name '._*'
+            exit 1
+          fi
