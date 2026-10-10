@@ -1,0 +1,4 @@
+#!/bin/bash
+# Quit the menu bar app before the payload replaces the bundle.
+pkill -x Clamshell || true
+exit 0

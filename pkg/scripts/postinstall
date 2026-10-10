@@ -1,0 +1,13 @@
+#!/bin/bash
+set -euo pipefail
+
+dir="$(cd "$(dirname "$0")" && pwd)"
+"$dir/scripts/install.sh"
+
+rm -rf /Applications/Clamshell.app
+ditto "$dir/Clamshell.app" /Applications/Clamshell.app
+
+user="$(stat -f '%Su' /dev/console)"
+if [[ -n "$user" && "$user" != 'root' ]]; then
+	launchctl asuser "$(id -u "$user")" sudo -u "$user" open /Applications/Clamshell.app || true
+fi

@@ -714,7 +714,7 @@ else
 fi
 
 printf '\n\033[1msyntax\033[0m\n\n'
-for f in "$REPO"/bin/clamshell "$REPO"/scripts/*.sh "$REPO"/tests/*.sh; do
+for f in "$REPO"/bin/clamshell "$REPO"/scripts/*.sh "$REPO"/pkg/scripts/preinstall "$REPO"/pkg/scripts/postinstall "$REPO"/tests/*.sh; do
 	if bash -n "$f" 2>/dev/null; then
 		printf '  \033[32mok\033[0m   %s parses\n' "${f#"$REPO"/}"
 		pass=$((pass + 1))
@@ -726,7 +726,7 @@ done
 
 if command -v shellcheck >/dev/null 2>&1; then
 	printf '\n\033[1mshellcheck\033[0m\n\n'
-	if shellcheck -s bash --severity=warning "$REPO"/bin/clamshell "$REPO"/scripts/*.sh "$REPO"/tests/*.sh; then
+	if shellcheck -s bash --severity=warning "$REPO"/bin/clamshell "$REPO"/scripts/*.sh "$REPO"/pkg/scripts/preinstall "$REPO"/pkg/scripts/postinstall "$REPO"/tests/*.sh; then
 		printf '  \033[32mok\033[0m   clean\n'
 		pass=$((pass + 1))
 	else
