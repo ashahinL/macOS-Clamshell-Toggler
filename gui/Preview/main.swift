@@ -12,13 +12,14 @@ func sample(mode: String, displays: Int = 0, lidClosed: Bool = false,
             batteryPercent: Int? = nil, sleepDisabled: Bool = false,
             watcherRunning: Bool = true, lowPowerMode: Bool = false,
             floor: Int? = 15, timerMinutes: Int? = nil, until: Int? = nil,
-            lpmCut: Bool = true, lpmHold: Bool = false) -> Status {
-    Status(version: "1.3.0", mode: mode, displays: displays, lidClosed: lidClosed,
+            lpmCut: Bool = true, lpmHold: Bool = false,
+            lastCut: String? = nil, resumePending: Bool = false) -> Status {
+    Status(version: "1.4.0", mode: mode, displays: displays, lidClosed: lidClosed,
            onBattery: batteryPercent != nil, sleepDisabled: sleepDisabled,
            watcherRunning: watcherRunning, modeFile: "~/.config/clamshell/mode",
            batteryPercent: batteryPercent, lowPowerMode: lowPowerMode, floor: floor,
            timerMinutes: timerMinutes, until: until, lpmCut: lpmCut, lpmHold: lpmHold,
-           lastCut: nil)
+           lastCut: lastCut, resumePending: resumePending)
 }
 
 func state(_ status: Status?, cliInstalled: Bool = true,
@@ -38,6 +39,8 @@ let samples: [(name: String, state: PanelState)] = [
                                      batteryPercent: 60, sleepDisabled: true,
                                      floor: 25, timerMinutes: 45, until: now + 600))),
     ("5-no-cli", state(nil, cliInstalled: false)),
+    ("6-off-resume", state(sample(mode: "off", batteryPercent: 14,
+                                  lastCut: "floor \(now - 60) 14", resumePending: true))),
 ]
 
 let noActions = PanelActions(

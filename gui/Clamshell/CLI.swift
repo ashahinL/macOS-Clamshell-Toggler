@@ -21,6 +21,7 @@ struct Status: Decodable {
     var lpmCut: Bool
     var lpmHold: Bool
     var lastCut: String?
+    var resumePending: Bool?
 }
 
 enum CLI {

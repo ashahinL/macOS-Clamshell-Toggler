@@ -243,12 +243,16 @@ cut_dir="$(mktemp -d)"
 #   CUT_SUDO_FAIL  non-empty → every sudo call fails, as with a broken sudoers rule
 #   CUT_LOG      path for CLAMSHELL_LOG_FILE (default: a file in the temp dir)
 #   CUT_BOOT     what boot_time prints, epoch seconds (none → nothing; default an hour ago)
+#   CUT_AFTER    polls to keep the first source; later polls report CUT_SRC2 (may be empty)
+#   CUT_SRC2     power source after CUT_AFTER (unset → the source never changes)
+#   CUT_RESUME   non-empty → write a resume marker before the polls
 cut_run() { # mode source pct floor lid displays polls [until [timer [lid-streak]]]
 	local mode="$1" src="$2" pct="$3" floor="$4" until_v="${8:-}" timer_v="${9:-}"
 	export cut_lid="$5" cut_disp="$6" cut_polls="$7" cut_src="$src" cut_pct="$pct" cut_streak="${10:-0}"
 	export cut_lp="${CUT_LP:-0}" cut_boot="${CUT_BOOT:-$(( $(date +%s) - 3600 ))}"
+	export cut_after="${CUT_AFTER-}" cut_src2="${CUT_SRC2-}"
 	rm -f "$cut_dir/mode" "$cut_dir/floor" "$cut_dir/last-cut" "$cut_dir/until" "$cut_dir/timer" \
-		"$cut_dir/lpm" "$cut_dir/lpm-hold"
+		"$cut_dir/lpm" "$cut_dir/lpm-hold" "$cut_dir/resume"
 	[[ -z "${CUT_LPM:-}" ]] || printf '%s\n' "$CUT_LPM" > "$cut_dir/lpm"
 	if [[ -n "${CUT_HOLD_AT:-}" ]]; then
 		: > "$cut_dir/lpm-hold"
@@ -258,6 +262,7 @@ cut_run() { # mode source pct floor lid displays polls [until [timer [lid-streak
 	[[ -z "$floor" ]] || printf '%s\n' "$floor" > "$cut_dir/floor"
 	[[ -z "$until_v" ]] || printf '%s\n' "$until_v" > "$cut_dir/until"
 	[[ -z "$timer_v" ]] || printf '%s\n' "$timer_v" > "$cut_dir/timer"
+	[[ -z "${CUT_RESUME:-}" ]] || printf 'on\n' > "$cut_dir/resume"
 	: > "$cut_dir/log"; : > "$cut_dir/calls"; : > "$cut_dir/batt"
 	(
 		set -- version
@@ -272,7 +277,12 @@ cut_run() { # mode source pct floor lid displays polls [until [timer [lid-streak
 		pmset() {
 			if [[ "${1:-}" == -g && "${2:-}" == batt ]]; then
 				echo x >> "$cut_dir/batt"
-				printf "Now drawing from '%s'\n" "$cut_src"
+				local src_now="$cut_src" seen
+				seen=$(wc -l < "$cut_dir/batt" | tr -d ' ')
+				if [[ -n "$cut_after" ]] && (( seen > cut_after )); then
+					src_now="$cut_src2"
+				fi
+				printf "Now drawing from '%s'\n" "$src_now"
 				[[ "$cut_pct" == none ]] ||
 					printf ' -InternalBattery-0 (id=1)\t%s%%; discharging; 0:40 remaining present: true\n' "$cut_pct"
 			elif [[ "${1:-}" == -g && -z "${2:-}" ]]; then
@@ -308,7 +318,7 @@ expect_eq 'the cut is logged with reason and percent' 1 \
 last_cut="$(cat "$cut_dir/last-cut" 2>/dev/null)"
 expect_eq 'last-cut records reason, epoch and percent' 1 \
 	"$([[ "$last_cut" =~ ^floor\ [0-9]+\ 14$ ]] && echo 1 || echo 0)"
-expect_eq 'every watcher write ran as the file owner via sudo' 3 \
+expect_eq 'every watcher write ran as the file owner via sudo' 4 \
 	"$(/usr/bin/grep -c "^sudo -n -u #$(id -u) " "$cut_dir/calls" || true)"
 
 cut_run on 'Battery Power' 14 '' 0 0 1
@@ -585,6 +595,60 @@ boot_check 'boot_time reads the sec field' 1790951856 \
 	'{ sec = 1790951856, usec = 561166 } Fri Oct  2 17:37:36 2026'
 boot_check 'boot_time prints nothing when it cannot parse' '' 'garbage'
 
+printf '\n\033[1mresume on charger\033[0m  (a floor or Low Power Mode cut comes back)\n\n'
+
+resume_there() { [[ -e "$cut_dir/resume" ]] && echo there || echo gone; }
+resume_logs() { /usr/bin/grep -c 'resume reason=ac' "$cut_dir/log" || true; }
+owner_sudos() { /usr/bin/grep -c "^sudo -n -u #$(id -u) " "$cut_dir/calls" || true; }
+all_sudos() { /usr/bin/grep -c '^sudo ' "$cut_dir/calls" || true; }
+
+CUT_AFTER=2 CUT_SRC2='AC Power' cut_run on 'Battery Power' 14 '' 0 0 4
+expect_eq 'floor cut, then 2 AC polls → mode on, marker gone' 'on gone' \
+	"$(tr -d '[:space:]' < "$cut_dir/mode") $(resume_there)"
+expect_eq 'one resume reason=ac log line' 1 "$(resume_logs)"
+expect_eq 'resume writes run as the folder owner' "6 6" "$(all_sudos) $(owner_sudos)"
+
+CUT_AFTER=2 CUT_SRC2='AC Power' cut_run on 'Battery Power' 14 '' 0 0 3
+expect_eq 'floor cut, then 1 AC poll → stays off, marker kept' 'off there' \
+	"$(tr -d '[:space:]' < "$cut_dir/mode") $(resume_there)"
+expect_eq 'one AC poll logs no resume' 0 "$(resume_logs)"
+
+CUT_AFTER=2 CUT_SRC2='' cut_run on 'Battery Power' 14 '' 0 0 4
+expect_eq 'floor cut, then unreadable source → stays off' 'off there' \
+	"$(tr -d '[:space:]' < "$cut_dir/mode") $(resume_there)"
+expect_eq 'an unreadable source logs no resume' 0 "$(resume_logs)"
+
+CUT_AFTER=2 CUT_SRC2='UPS Power' cut_run on 'Battery Power' 14 '' 0 0 4
+expect_eq 'floor cut, then 2 UPS polls → mode on, marker gone' 'on gone' \
+	"$(tr -d '[:space:]' < "$cut_dir/mode") $(resume_there)"
+expect_eq 'UPS resume is logged once' 1 "$(resume_logs)"
+
+CUT_AFTER=1 CUT_SRC2='AC Power' cut_run on 'Battery Power' 80 '' 0 0 3 "$((now - 10))" 60 1
+expect_eq 'timer cut, then AC → stays off, no marker' 'off gone' \
+	"$(tr -d '[:space:]' < "$cut_dir/mode") $(resume_there)"
+expect_eq 'a timer cut logs no resume' 0 "$(resume_logs)"
+
+CUT_LPM=on CUT_LP=1 CUT_AFTER=2 CUT_SRC2='AC Power' cut_run on 'Battery Power' 80 '' 0 0 4
+expect_eq 'Low Power Mode cut, then AC → mode on' 'on gone' \
+	"$(tr -d '[:space:]' < "$cut_dir/mode") $(resume_there)"
+expect_eq 'the cut was lpm and the resume logged once' '1 1' \
+	"$(/usr/bin/grep -c 'cut reason=lpm percent=80$' "$cut_dir/log" || true) $(resume_logs)"
+
+CUT_RESUME=1 cut_run auto 'Battery Power' 80 '' 0 0 1
+expect_eq 'mode auto with a marker → marker deleted, mode stays auto' \
+	'mode=auto cuts=0 pmset=[] gone' "$(cut_summary) $(resume_there)"
+expect_eq 'auto drops the marker without reading the battery' 0 \
+	"$(wc -l < "$cut_dir/batt" | tr -d ' ')"
+
+CUT_AFTER=2 CUT_SRC2='AC Power' cut_run on 'Battery Power' 14 '' 0 0 4 '' 60
+expect_eq 'resume with timer 60 → until is about an hour ahead' ok "$(until_near 3600)"
+expect_eq 'resume with a timer still turns the mode on and drops the marker' 'on gone' \
+	"$(tr -d '[:space:]' < "$cut_dir/mode") $(resume_there)"
+
+printf 'on\n' > "$cut_dir/resume"
+tcli write_mode off >/dev/null
+expect_eq 'write_mode off deletes a pending resume' gone "$(resume_there)"
+
 rm -rf "$cut_dir"
 
 printf '\n\033[1mjson shape\033[0m\n\n'
@@ -624,6 +688,7 @@ printf '1730000000\n' > "$full_dir/until"
 printf 'on\n' > "$full_dir/lpm"
 : > "$full_dir/lpm-hold"
 printf 'floor 1730000000 14\n' > "$full_dir/last-cut"
+printf 'on\n' > "$full_dir/resume"
 
 bare_dir="$(mktemp -d)"
 [[ -d "$bare_dir" ]] || { printf 'json shape: no temp dir\n' >&2; exit 1; }
@@ -635,15 +700,17 @@ full_json="$(json_run "$full_dir" "$batt_on")"
 bare_json="$(json_run "$bare_dir" "$batt_no_pct")"
 
 expect_eq 'json: every key, with every config file present' \
-	'{"version":"'"$version"'","mode":"on","displays":0,"lidClosed":true,"onBattery":true,"sleepDisabled":true,"screenWhenClosed":"off","internalPanelOn":false,"batteryPercent":42,"lowPowerMode":true,"floor":20,"timerMinutes":60,"until":1730000000,"lpmCut":true,"lpmHold":true,"lastCut":"floor 1730000000 14","watcherRunning":true,"modeFile":"'"$full_dir"'/mode"}' \
+	'{"version":"'"$version"'","mode":"on","displays":0,"lidClosed":true,"onBattery":true,"sleepDisabled":true,"screenWhenClosed":"off","internalPanelOn":false,"batteryPercent":42,"lowPowerMode":true,"floor":20,"timerMinutes":60,"until":1730000000,"lpmCut":true,"lpmHold":true,"lastCut":"floor 1730000000 14","resumePending":true,"watcherRunning":true,"modeFile":"'"$full_dir"'/mode"}' \
 	"$full_json"
 
 expect_eq 'json: no config files gives defaults and nulls, and a stray quote in last-cut gives null' \
-	'{"version":"'"$version"'","mode":"on","displays":0,"lidClosed":true,"onBattery":true,"sleepDisabled":true,"screenWhenClosed":"off","internalPanelOn":false,"batteryPercent":null,"lowPowerMode":true,"floor":15,"timerMinutes":null,"until":null,"lpmCut":false,"lpmHold":false,"lastCut":null,"watcherRunning":true,"modeFile":"'"$bare_dir"'/mode"}' \
+	'{"version":"'"$version"'","mode":"on","displays":0,"lidClosed":true,"onBattery":true,"sleepDisabled":true,"screenWhenClosed":"off","internalPanelOn":false,"batteryPercent":null,"lowPowerMode":true,"floor":15,"timerMinutes":null,"until":null,"lpmCut":false,"lpmHold":false,"lastCut":null,"resumePending":false,"watcherRunning":true,"modeFile":"'"$bare_dir"'/mode"}' \
 	"$bare_json"
 
 expect_eq 'json: the first output parses as JSON' ok \
 	"$(osascript -l JavaScript -e 'function run(a){JSON.parse(a[0]); return "ok"}' "$full_json")"
+expect_eq 'json: resumePending is true when the marker exists' true \
+	"$(osascript -l JavaScript -e 'function run(a){return JSON.parse(a[0]).resumePending}' "$full_json")"
 
 quote_dir="$bare_dir/q\"b\\c"$'\t'"d"
 mkdir -p "$quote_dir"

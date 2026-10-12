@@ -224,8 +224,21 @@ struct Panel: View {
         switch status?.mode {
         case "auto": return "Stays awake with the lid closed only while a display is attached."
         case "on": return "Stays awake with the lid closed, even with no display. This drains the battery."
+        case "off" where status?.resumePending == true:
+            return "\(cutReason) Always Awake comes back on when you plug in."
         case "off": return "Closing the lid puts the Mac to sleep, as normal."
         default: return nil
+        }
+    }
+
+    /// From `lastCut`, for example "floor 1791770857 15".
+    private var cutReason: String {
+        let fields = status?.lastCut?.split(separator: " ") ?? []
+        switch fields.first {
+        case "floor" where fields.count > 2: return "Turned off at \(fields[2])% battery."
+        case "floor": return "Turned off at the battery floor."
+        case "lpm": return "Turned off by Low Power Mode."
+        default: return "Turned off by a cutoff."
         }
     }
 

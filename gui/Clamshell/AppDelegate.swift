@@ -98,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let fresh = CLI.status()
             DispatchQueue.main.async {
                 guard let self, self.edits == started else { return }
+                self.noteResume(from: self.status, to: fresh)
                 self.status = fresh
                 self.noteCut(fresh)
                 self.apply()
@@ -116,6 +117,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard status.lastCut != lastCutSeen else { return }
         lastCutSeen = status.lastCut
         guard let line = status.lastCut, let message = cutMessage(line) else { return }
+        notify(message)
+    }
+
+    /// The watcher turned Always Awake back on after a floor or Low Power Mode
+    /// cut. A mode picked in the panel clears `resumePending` first, so it never
+    /// lands here.
+    private func noteResume(from old: Status?, to new: Status?) {
+        guard old?.resumePending == true, let new,
+              new.resumePending != true, new.mode == "on" else { return }
+        notify("Charger connected. Always Awake is back on.")
+    }
+
+    private func notify(_ message: String) {
         probe.async {
             CLI.run("/usr/bin/osascript", ["-e", "on run argv",
                                            "-e", "display notification (item 1 of argv) with title \"Clamshell\"",
@@ -203,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         PanelActions(
             setMode: { [weak self] mode in
                 self?.status?.mode = mode
+                self?.status?.resumePending = false
                 self?.edits += 1
                 self?.apply()
                 self?.probe.async {
