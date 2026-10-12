@@ -3,7 +3,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Platform: macOS 13+](https://img.shields.io/badge/Platform-macOS%2013%2B-brightgreen.svg)
 ![Architecture: Apple Silicon](https://img.shields.io/badge/Arch-Apple%20Silicon-orange.svg)
-![Version: 1.3.0](https://img.shields.io/badge/Version-1.3.0-purple.svg)
+![Version: 1.4.0](https://img.shields.io/badge/Version-1.4.0-purple.svg)
 
 Use your Mac with the lid closed **on battery power**, with no charger.
 
@@ -125,8 +125,10 @@ mode is `on`.
 When a cutoff fires, Clamshell sets the mode to `off` and clears the sleep
 flag, and the app shows a notification. If the lid is shut and no monitor is
 attached, Clamshell then puts the Mac to sleep. If the lid is open or a monitor
-is attached, it leaves the Mac awake. Plugging in afterwards does not turn `on`
-back on.
+is attached, it leaves the Mac awake. After a battery floor or Low Power
+Mode cutoff, plugging in turns `on` back on within about 10 seconds. It
+restarts the auto-off timer if one is set. The timer cutoff does not come
+back. Picking any mode yourself cancels the comeback.
 
 The root watcher enforces the timer, so quitting the app or rebooting does not
 cancel it. When the timer fires, it also sets the timer to `off`, so the next

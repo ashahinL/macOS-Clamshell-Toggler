@@ -12,7 +12,7 @@
 
 set -uo pipefail
 
-readonly VERSION='1.3.0'
+readonly VERSION='1.4.0'
 # Overridable so the tests can exercise the code paths that log. Note that a
 # redirection bash cannot open makes it skip the command entirely, so an
 # unwritable log would silently stop pmset from being called at all.
@@ -170,6 +170,9 @@ write_mode() {
 	else
 		rm -f "$f"
 	fi
+
+	# A mode the user picks cancels a pending resume.
+	f="$(config_path resume)" && rm -f "$f"
 
 	printf '%smode → %s%s%s\n' "$C_DIM" "$C_BOLD" "$mode" "$C_RESET"
 	case "$mode" in
@@ -402,6 +405,7 @@ BLANK_LAST=0     # epoch seconds of the last display-sleep call
 CUT_LID_STREAK=0 # consecutive polls the lid has read closed, while mode is on
 FLOOR_STREAK=0   # consecutive polls on battery at or under the floor
 LPM_STREAK=0     # consecutive polls on battery with Low Power Mode on
+RESUME_STREAK=0  # consecutive charger polls before a floor or Low Power Mode cut resumes
 CUT_STAMP=''     # mode_stamp right after a cut; see held_by_cut
 
 # pmset with its errors sent to the log. If bash cannot open the log, it skips
@@ -505,6 +509,13 @@ cut_off() {
 	f=$(config_path last-cut) &&
 		write_as_owner "$f" "$reason $(date +%s)${percent:+ $percent}"
 
+	# Floor and Low Power Mode cuts come back on a charger. A timer cut does not.
+	if [[ "$reason" == floor || "$reason" == lpm ]]; then
+		f=$(config_path resume) && write_as_owner "$f" on
+	elif [[ "$reason" == timer ]]; then
+		f=$(config_path resume) && [[ -e "$f" ]] && remove_as_owner "$f"
+	fi
+
 	# Clearing the flag does not sleep a Mac whose lid is already shut: macOS
 	# decides that when the lid closes. So sleep it ourselves, but only with
 	# nobody there: lid shut on consecutive polls and no monitor attached. The
@@ -516,6 +527,7 @@ cut_off() {
 	CUT_STAMP=$(mode_stamp)
 	FLOOR_STREAK=0
 	LPM_STREAK=0
+	RESUME_STREAK=0
 }
 
 # Has a cutoff already ended this mode? True while the mode file is unchanged
@@ -532,15 +544,44 @@ held_by_cut() {
 # The floor and Low Power Mode cuts each need LID_CONFIRM polls in a row, so
 # one bad read cannot end a job.
 maybe_cut() {
-	local displays="$1" floor until_at f hold boot
+	local displays="$1" floor until_at f hold boot mode timer
 
 	hold=$(config_path lpm-hold) || hold=''
+	mode=$(read_mode)
 
-	if [[ "$(read_mode)" != on ]]; then
+	if [[ "$mode" != on ]]; then
 		CUT_LID_STREAK=0
 		FLOOR_STREAK=0
 		LPM_STREAK=0
 		[[ -n "$hold" && -e "$hold" ]] && remove_as_owner "$hold"
+
+		# Only a real charger reading counts. An empty source must not turn it on.
+		f=$(config_path resume) || f=''
+		if [[ "$mode" == off && -n "$f" && -e "$f" ]]; then
+			read_battery
+			if [[ "$PM_SOURCE" == 'AC Power' || "$PM_SOURCE" == 'UPS Power' ]]; then
+				RESUME_STREAK=$(( RESUME_STREAK + 1 ))
+				if (( RESUME_STREAK >= LID_CONFIRM )); then
+					if write_as_owner "$MODE_FILE" on; then
+						timer=$(read_timer)
+						if [[ "$timer" != off ]]; then
+							write_as_owner "$(config_path until)" \
+								"$(( $(date +%s) + 10#$timer * 60 ))"
+						fi
+						remove_as_owner "$f"
+						RESUME_STREAK=0
+						printf '%s resume reason=ac percent=%s\n' \
+							"$(date '+%Y-%m-%d %H:%M:%S')" \
+							"${PM_PERCENT:-unknown}" >> "$LOG_FILE"
+					fi
+				fi
+			else
+				RESUME_STREAK=0
+			fi
+		else
+			[[ "$mode" != off && -n "$f" && -e "$f" ]] && remove_as_owner "$f"
+			RESUME_STREAK=0
+		fi
 		return
 	fi
 
@@ -640,7 +681,7 @@ cmd_watch() {
 }
 
 cmd_status() {
-	local mode displays lid pid awake pct floor timer lpm
+	local mode displays lid pid awake pct floor timer lpm f
 	mode=$(read_mode)
 	displays=$(external_displays)
 	lid=open
@@ -668,6 +709,8 @@ cmd_status() {
 	printf '  battery floor       %s\n' "$floor"
 	printf '  auto-off timer      %s\n' "$timer"
 	printf '  low power mode      %s\n' "$lpm"
+	f=$(config_path resume) && [[ -e "$f" ]] &&
+		printf '  resume on charger   yes\n'
 	printf '  sleep disabled      %s\n' "${awake:-unknown}"
 	printf '  screen when closed  %s\n' "$(read_screen)"
 	case "$(internal_panel_level)" in
@@ -696,6 +739,7 @@ cmd_json() {
 	local screen_pref
 	local pct=null floor timer until_at=null
 	local low_power=false lpm_cut=false lpm_hold=false last_cut=null f v='' mode_file
+	local resume_pending=false
 
 	pid=$(watcher_pid)
 	read_power_settings
@@ -728,6 +772,7 @@ cmd_json() {
 	# A stray quote in last-cut would make the whole document invalid JSON.
 	f=$(config_path last-cut) && [[ -r "$f" ]] && { read -r v < "$f" || true; } 2>/dev/null
 	[[ "$v" =~ ^(floor|timer|lpm)\ [0-9]+(\ [0-9]+)?$ ]] && last_cut="\"$v\""
+	f=$(config_path resume) && [[ -e "$f" ]] && resume_pending=true
 
 	printf '{'
 	printf '"version":"%s",'      "$VERSION"
@@ -746,6 +791,7 @@ cmd_json() {
 	printf '"lpmCut":%s,'         "$lpm_cut"
 	printf '"lpmHold":%s,'        "$lpm_hold"
 	printf '"lastCut":%s,'        "$last_cut"
+	printf '"resumePending":%s,'  "$resume_pending"
 	printf '"watcherRunning":%s,' "$watching"
 	mode_file="${MODE_FILE//[[:cntrl:]]/}"
 	mode_file="${mode_file//\\/\\\\}"
@@ -796,6 +842,8 @@ ${C_BOLD}NOTES${C_RESET}
   ${C_YELLOW}on${C_RESET} keeps the machine awake with no display attached, which
   will drain the battery and heat the Mac in a closed bag. Prefer
   ${C_BOLD}auto${C_RESET} unless you specifically need a headless session.
+  After a battery floor or Low Power Mode cutoff, plugging in turns it
+  back on (a timer cutoff stays off).
 
 ${C_BOLD}HOMEPAGE${C_RESET}
   https://github.com/ashahinL/macOS-Clamshell-Toggler
