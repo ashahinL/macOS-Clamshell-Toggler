@@ -227,6 +227,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if !CLI.isInstalled {
             state = .warning
             description = "clamshell is not installed"
+        } else if status == nil {
+            state = .warning
+            description = "Unable to read clamshell status"
         } else if let status, !status.watcherRunning {
             state = .warning
             description = "clamshell watcher is not running"

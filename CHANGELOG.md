@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **A display probe that fails part way counts as no display.** If `ioreg`
   printed some output and then failed, the partial count was used, which could
   keep the Mac awake in Automatic.
+- **The menu bar icon no longer says "sleeps" when it cannot read the status.**
+  It shows the warning icon and "Unable to read clamshell status", like the
+  panel.
 
 [1.5.0]: https://github.com/ashahinL/macOS-Clamshell-Toggler/releases/tag/v1.5.0
 
