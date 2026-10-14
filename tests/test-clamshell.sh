@@ -764,6 +764,60 @@ else
 	fail=$((fail + 1))
 fi
 
+# The watcher starts the event helper as soon as it is bootstrapped, so the
+# helper has to be in place first.
+n_events="$(line_of 'install -o root -g wheel -m 755 "\$events_src" "\$EVENTS_BIN"')"
+if [[ -n "$n_events" && -n "$n_bootstrap" ]] && (( n_events < n_bootstrap )); then
+	printf '  \033[32mok\033[0m   event helper is installed before the daemon starts\n'
+	pass=$((pass + 1))
+else
+	printf '  \033[31mFAIL\033[0m event helper is not installed before bootstrap\n'
+	printf '       events=%s bootstrap=%s\n' "${n_events:-?}" "${n_bootstrap:-?}"
+	fail=$((fail + 1))
+fi
+
+if /usr/bin/grep -q '/usr/local/bin/clamshell-events' "$REPO/scripts/uninstall.sh"; then
+	printf '  \033[32mok\033[0m   uninstall removes the event helper\n'
+	pass=$((pass + 1))
+else
+	printf '  \033[31mFAIL\033[0m uninstall leaves the event helper behind\n'
+	fail=$((fail + 1))
+fi
+
+# Run the installer's helper block on its own, with `install` stubbed, so the
+# source choice and the missing-helper path are exercised without root. A
+# missing helper must warn and carry on: under `set -e` an error there would
+# abort the install before the daemon is loaded.
+events_block="$(awk '/^events_src=/{on=1} on{print} on&&/^fi$/{exit}' "$inst")"
+run_events_block() {  # $1 = fake REPO; prints the chosen source or the warning
+	bash -c 'set -euo pipefail
+		REPO="$1" EVENTS_BIN=/nonexistent/clamshell-events
+		say()     { :; }
+		warn()    { echo "warn: $*"; }
+		install() { echo "src=${*: -2:1}"; }
+		eval "$2"
+		echo done' _ "$1" "$events_block" 2>&1
+}
+ev_tmp="$(mktemp -d)"
+mkdir -p "$ev_tmp/pkg/bin" "$ev_tmp/pkg/build" "$ev_tmp/repo/build" "$ev_tmp/none"
+touch "$ev_tmp/pkg/bin/clamshell-events" "$ev_tmp/pkg/build/clamshell-events" \
+	"$ev_tmp/repo/build/clamshell-events"
+for case in "pkg|src=$ev_tmp/pkg/bin/clamshell-events" \
+            "repo|src=$ev_tmp/repo/build/clamshell-events" \
+            "none|warn: clamshell-events not built"; do
+	dir="${case%%|*}" want="${case#*|}"
+	got="$(run_events_block "$ev_tmp/$dir" || true)"
+	if [[ "$got" == "$want"*$'\n'done ]]; then
+		printf '  \033[32mok\033[0m   event helper source, %s layout\n' "$dir"
+		pass=$((pass + 1))
+	else
+		printf '  \033[31mFAIL\033[0m event helper source, %s layout\n' "$dir"
+		printf '       want %s..., got: %s\n' "$want" "$got"
+		fail=$((fail + 1))
+	fi
+done
+rm -rf "$ev_tmp"
+
 printf '\n\033[1mversions\033[0m\n\n'
 
 # The app bundle carries its own version string, which drifted to a release

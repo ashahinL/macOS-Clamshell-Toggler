@@ -19,9 +19,9 @@ say 'unloading daemon'
 launchctl bootout "system/$LABEL" 2>/dev/null || true
 
 say 'removing files'
-echo '    /Applications/Clamshell.app, the CLI, the watcher and the logs'
+echo '    /Applications/Clamshell.app, the CLI, the event helper, the watcher and the logs'
 pkill -x Clamshell || true
-rm -f "$PLIST" /usr/local/bin/clamshell /usr/local/bin/clamshell-uninstall
+rm -f "$PLIST" /usr/local/bin/clamshell /usr/local/bin/clamshell-events /usr/local/bin/clamshell-uninstall
 rm -rf /Applications/Clamshell.app
 rm -f /var/log/clamshell.log /var/log/clamshell.err /var/log/clamshell.err.prev
 pkgutil --forget local.clamshell.pkg >/dev/null 2>&1 || true

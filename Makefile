@@ -60,7 +60,7 @@ test:
 ## Build the unsigned installer
 # No payload. One would ship AppleDouble files and could reset /Applications
 # from root:admin 775 to 755 root:wheel. postinstall copies the app instead.
-pkg: $(APP_BIN)
+pkg: $(APP_BIN) $(EVENTS_BIN)
 	rm -rf $(BUILD_DIR)/pkgscripts
 	mkdir -p $(BUILD_DIR)/pkgscripts/bin \
 		$(BUILD_DIR)/pkgscripts/scripts \
@@ -68,10 +68,12 @@ pkg: $(APP_BIN)
 	ditto --noextattr --noqtn --norsrc $(APP_BUNDLE) $(BUILD_DIR)/pkgscripts/$(APP_NAME).app
 	cp pkg/scripts/preinstall pkg/scripts/postinstall $(BUILD_DIR)/pkgscripts/
 	cp bin/clamshell $(BUILD_DIR)/pkgscripts/bin/
+	cp $(EVENTS_BIN) $(BUILD_DIR)/pkgscripts/bin/
 	cp scripts/install.sh scripts/uninstall.sh $(BUILD_DIR)/pkgscripts/scripts/
 	cp launchd/local.clamshell.plist.in $(BUILD_DIR)/pkgscripts/launchd/
 	chmod +x $(BUILD_DIR)/pkgscripts/preinstall $(BUILD_DIR)/pkgscripts/postinstall \
 		$(BUILD_DIR)/pkgscripts/bin/clamshell \
+		$(BUILD_DIR)/pkgscripts/bin/clamshell-events \
 		$(BUILD_DIR)/pkgscripts/scripts/install.sh \
 		$(BUILD_DIR)/pkgscripts/scripts/uninstall.sh
 	pkgbuild --nopayload \

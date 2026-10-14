@@ -10,6 +10,7 @@ set -euo pipefail
 readonly LABEL='local.clamshell'
 readonly PLIST="/Library/LaunchDaemons/${LABEL}.plist"
 readonly BIN='/usr/local/bin/clamshell'
+readonly EVENTS_BIN='/usr/local/bin/clamshell-events'
 readonly UNINSTALL_BIN='/usr/local/bin/clamshell-uninstall'
 readonly ERR_LOG='/var/log/clamshell.err'          # plist StandardErrorPath
 readonly ERR_LOG_PREV="${ERR_LOG}.prev"
@@ -42,6 +43,17 @@ say "installing for user: $TARGET_USER"
 say "installing $BIN"
 install -d -o root -g wheel -m 755 /usr/local/bin
 install -o root -g wheel -m 755 "$REPO/bin/clamshell" "$BIN"
+
+# The event helper sits in bin/ inside the pkg and in build/ in a checkout after
+# `make`. Missing is only a warning: the watcher falls back to polling.
+events_src="$REPO/bin/clamshell-events"
+[[ -f "$events_src" ]] || events_src="$REPO/build/clamshell-events"
+if [[ -f "$events_src" ]]; then
+	say "installing $EVENTS_BIN"
+	install -o root -g wheel -m 755 "$events_src" "$EVENTS_BIN"
+else
+	warn 'clamshell-events not built (run make first); the watcher will poll instead'
+fi
 
 say "installing $UNINSTALL_BIN"
 install -o root -g wheel -m 755 "$REPO/scripts/uninstall.sh" "$UNINSTALL_BIN"
