@@ -928,7 +928,7 @@ wl_stop
 wl_fallback_case() { # name helper [stall] [check-helper-gone]
 	local gone=''
 	wl_start "$2" "${3:-}"
-	wl_wait 6 wl_has_gone
+	wl_wait 12 wl_has_gone   # the ready wait is 10s
 	sleep 0.2
 	printf 'on\n' > "$wl_dir/mode"
 	[[ -z "${4:-}" ]] || gone=" $(wl_yes eval '! wl_helper_up')"

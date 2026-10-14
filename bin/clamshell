@@ -402,7 +402,7 @@ mode_stamp() {
 	stat -f '%Fm %z' "$MODE_FILE" 2>/dev/null
 }
 
-# Blanking state, carried across polls by cmd_watch.
+# Blanking state, carried across passes by run_pass.
 BLANK_STREAK=0   # consecutive polls the lid has read closed
 BLANK_LAST=0     # epoch seconds of the last display-sleep call
 
@@ -751,7 +751,7 @@ watch_loop() {
 	exec 3< <(exec "${CLAMSHELL_EVENTS:-/usr/local/bin/clamshell-events}" \
 		--parent $$ "$(dirname "$MODE_FILE")" 2>/dev/null)
 	EVENTS_PID=$!
-	read -r -t 3 -u 3 line
+	read -r -t 10 -u 3 line
 	[[ "$line" == ready\ * ]] || events_gone 'not ready'
 	LAST_LINE=$(date +%s)
 
