@@ -501,6 +501,21 @@ expect_eq 'timer 60, on, deadline write fails → error, mode stays off' 'nonzer
 	"$( ((rc)) && printf nonzero || printf zero ) $(tr -d '[:space:]' < "$cut_dir/mode")"
 rmdir "$cut_dir/until.tmp"
 
+timer_reset on
+mkdir "$cut_dir/until.tmp"
+tcli write_timer 1 >/dev/null 2>&1; rc=$?
+expect_eq 'on, no timer, timer 1 whose deadline fails → error, timer still off' 'nonzero off gone' \
+	"$( ((rc)) && printf nonzero || printf zero ) $(tcli read_timer) $(has_until)"
+rmdir "$cut_dir/until.tmp"
+
+timer_reset on 60 "$((now + 1000))"
+mkdir "$cut_dir/until.tmp"
+tcli write_timer 1 >/dev/null 2>&1; rc=$?
+expect_eq 'on, timer 60, timer 1 whose deadline fails → old timer and deadline kept' \
+	"nonzero 60 $((now + 1000))" \
+	"$( ((rc)) && printf nonzero || printf zero ) $(tcli read_timer) $(tr -d '[:space:]' < "$cut_dir/until")"
+rmdir "$cut_dir/until.tmp"
+
 timer_reset on 60 "$((now + 1000))"
 tcli write_mode off >/dev/null
 expect_eq 'timer 60, off → until gone, timer kept' 'gone 60' \

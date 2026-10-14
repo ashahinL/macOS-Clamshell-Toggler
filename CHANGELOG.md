@@ -39,8 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   mode file check now uses the file time to the nanosecond.
 - **A timer that fails to save no longer leaves Always Awake on.** `clamshell
   on` wrote the mode before the deadline, so a failed deadline write left `on`
-  running with no timer. It now writes the deadline first. Resume on charger
-  had the same order and now stays off if the deadline cannot be written.
+  running with no timer. It now writes the deadline first. `clamshell timer`
+  while on and resume on charger had the same order and are fixed the same way.
 - **A display probe that fails part way counts as no display.** If `ioreg`
   printed some output and then failed, the partial count was used, which could
   keep the Mac awake in Automatic.

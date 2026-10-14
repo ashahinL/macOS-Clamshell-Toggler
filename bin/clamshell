@@ -318,12 +318,13 @@ write_timer() {
 	f="$(config_path timer)" || die "cannot resolve the config directory"
 	dir="$(dirname "$f")"
 	mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
-	printf '%s\n' "$v" > "$f" 2>/dev/null || die "cannot write $f"
 
+	# The deadline first, as in write_mode: if it fails, the old timer and
+	# deadline stay as they were.
+	[[ "$v" != off && "$(read_mode)" == on ]] && arm_until "$v"
+	printf '%s\n' "$v" > "$f" 2>/dev/null || die "cannot write $f"
 	if [[ "$v" == off ]]; then
 		f="$(config_path until)" && rm -f "$f"
-	elif [[ "$(read_mode)" == on ]]; then
-		arm_until "$v"
 	fi
 
 	printf '%sauto-off timer → %s%s%s\n' "$C_DIM" "$C_BOLD" "$v" "$C_RESET"
