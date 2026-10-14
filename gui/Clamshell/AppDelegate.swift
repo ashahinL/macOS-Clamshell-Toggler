@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var readQueued = false
 
     private let popover = NSPopover()
+    private var outsideClicks: Any?
     private var lastClose = Date.distantPast
     /// Bumped on every change from the panel, so a status read that started
     /// before it is dropped instead of undoing it.
@@ -118,8 +119,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentViewController?.view.window?.makeKey()
     }
 
+    /// Another app's menu bar icon takes the click without making this app
+    /// inactive, so a transient popover never sees it and stays open.
     func popoverWillShow(_ notification: Notification) {
         startTicker(interval: Self.openInterval)
+        outsideClicks = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            self?.popover.performClose(nil)
+        }
     }
 
     func popoverWillClose(_ notification: Notification) {
@@ -127,6 +135,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
+        if let outsideClicks { NSEvent.removeMonitor(outsideClicks) }
+        outsideClicks = nil
         startTicker(interval: idleInterval)
     }
 

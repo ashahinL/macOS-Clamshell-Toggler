@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   panel.
 - **Uninstall removes the login agent.** When Open at Login fell back to a
   LaunchAgent, uninstall left it behind, pointing at the deleted app.
+- **The panel closes when you click another menu bar icon.** It used to stay
+  open under the other app's menu until you clicked the Clamshell icon again.
 - **A home folder with a space in its path works.** The installer read the
   home path only up to the first space.
 
