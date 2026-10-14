@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   panel.
 - **Uninstall removes the login agent.** When Open at Login fell back to a
   LaunchAgent, uninstall left it behind, pointing at the deleted app.
+- **A home folder with a space in its path works.** The installer read the
+  home path only up to the first space.
 
 [1.5.0]: https://github.com/ashahinL/macOS-Clamshell-Toggler/releases/tag/v1.5.0
 

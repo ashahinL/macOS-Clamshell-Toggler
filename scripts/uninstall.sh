@@ -13,21 +13,30 @@ readonly PLIST="/Library/LaunchDaemons/${LABEL}.plist"
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# The plist form keeps a home path with spaces whole.
+home_of() {
+	dscl -plist . -read "/Users/$1" NFSHomeDirectory 2>/dev/null |
+		plutil -extract 'dsAttrTypeStandard:NFSHomeDirectory.0' raw -o - - 2>/dev/null
+}
+
+# Open at Login may have fallen back to a LaunchAgent in the user's home.
+remove_login_agent() {
+	local user="${SUDO_USER:-}" home agent
+	[[ -z "$user" || "$user" == 'root' ]] && user="$(stat -f '%Su' /dev/console)"
+	home="$(home_of "$user" || true)"
+	agent="$home/Library/LaunchAgents/local.clamshell.menubar.plist"
+	[[ -n "$home" && -e "$agent" ]] || return 0
+	say 'removing the login agent'
+	launchctl bootout "gui/$(id -u "$user")/local.clamshell.menubar" 2>/dev/null || true
+	rm -f "$agent"
+}
+
 [[ $EUID -eq 0 ]] || die 'run with sudo:  sudo clamshell-uninstall'
 
 say 'unloading daemon'
 launchctl bootout "system/$LABEL" 2>/dev/null || true
 
-# Open at Login may have fallen back to a LaunchAgent in the user's home.
-user="${SUDO_USER:-}"
-[[ -z "$user" || "$user" == 'root' ]] && user="$(stat -f '%Su' /dev/console)"
-home="$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
-agent="$home/Library/LaunchAgents/local.clamshell.menubar.plist"
-if [[ -n "$home" && -e "$agent" ]]; then
-	say 'removing the login agent'
-	launchctl bootout "gui/$(id -u "$user")/local.clamshell.menubar" 2>/dev/null || true
-	rm -f "$agent"
-fi
+remove_login_agent
 
 say 'removing files'
 echo '    /Applications/Clamshell.app, the CLI, the event helper, the watcher and the logs'

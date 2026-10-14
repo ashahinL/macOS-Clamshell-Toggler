@@ -1049,14 +1049,34 @@ else
 	fail=$((fail + 1))
 fi
 
-if /usr/bin/grep -q 'LaunchAgents/local.clamshell.menubar.plist' "$REPO/scripts/uninstall.sh" &&
-   /usr/bin/grep -q 'rm -f "$agent"' "$REPO/scripts/uninstall.sh"; then
-	printf '  \033[32mok\033[0m   uninstall removes the login agent\n'
-	pass=$((pass + 1))
-else
-	printf '  \033[31mFAIL\033[0m uninstall leaves the login agent behind\n'
-	fail=$((fail + 1))
-fi
+# The uninstaller's functions alone, against a temp home with a space in its
+# path, with dscl, id and launchctl stubbed.
+la_dir="$(mktemp -d)"
+la_home="$la_dir/spaced home"
+mkdir -p "$la_home/Library/LaunchAgents" "$la_dir/bin"
+: > "$la_home/Library/LaunchAgents/local.clamshell.menubar.plist"
+cat > "$la_dir/bin/dscl" <<EOF
+#!/bin/sh
+printf '<?xml version="1.0"?><plist version="1.0"><dict><key>dsAttrTypeStandard:NFSHomeDirectory</key><array><string>%s</string></array></dict></plist>' "$la_home"
+EOF
+printf '#!/bin/sh\necho 501\n' > "$la_dir/bin/id"
+printf '#!/bin/sh\necho "launchctl $*" >> %q/calls\n' "$la_dir" > "$la_dir/bin/launchctl"
+chmod +x "$la_dir/bin/"*
+la_got="$(
+	PATH="$la_dir/bin:$PATH" SUDO_USER=someone bash -c '
+		set -euo pipefail
+		say() { :; }
+		eval "$(sed -n "/^home_of()/,/^}/p; /^remove_login_agent()/,/^}/p" "$1")"
+		remove_login_agent
+		printf "%s " "$(home_of someone)"
+		[[ -e "$2/Library/LaunchAgents/local.clamshell.menubar.plist" ]] && printf there || printf gone
+	' _ "$REPO/scripts/uninstall.sh" "$la_home"
+) $(cat "$la_dir/calls" 2>/dev/null)"
+expect_eq 'uninstall removes the login agent from a home with a space in it' \
+	"$la_home gone launchctl bootout gui/501/local.clamshell.menubar" "$la_got"
+expect_eq 'install.sh reads the same home whole' "$la_home" \
+	"$(PATH="$la_dir/bin:$PATH" bash -c 'eval "$(sed -n "/^home_of()/,/^}/p" "$1")"; home_of someone' _ "$REPO/scripts/install.sh")"
+rm -rf "$la_dir"
 
 events_block="$(awk '/^events_src=/{on=1} on{print} on&&/^fi$/{exit}' "$inst")"
 run_events_block() {
