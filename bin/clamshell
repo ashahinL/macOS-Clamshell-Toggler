@@ -694,16 +694,16 @@ poll_loop() {
 }
 
 next_wait() {
-	local now due s
+	local now due s pending
 	now=$(date +%s)
 	due=$(( LAST_PASS + MAX_PASS_GAP ))
 	(( LAST_LINE + STALL_LIMIT < due )) && due=$(( LAST_LINE + STALL_LIMIT ))
+	# A pass that did not count may have seen a condition that has no streak yet.
+	pending=$(( ! COUNTS_TOWARD_STREAK ))
 	for s in "$BLANK_STREAK" "$CUT_LID_STREAK" "$FLOOR_STREAK" "$LPM_STREAK" "$RESUME_STREAK"; do
-		if (( s >= 1 && s < LID_CONFIRM )); then
-			(( LAST_SAMPLE + DISPLAY_POLL < due )) && due=$(( LAST_SAMPLE + DISPLAY_POLL ))
-			break
-		fi
+		(( s >= 1 && s < LID_CONFIRM )) && pending=1
 	done
+	(( pending && LAST_SAMPLE + DISPLAY_POLL < due )) && due=$(( LAST_SAMPLE + DISPLAY_POLL ))
 	(( BLANK_LAST > 0 && BLANK_LAST + BLANK_REARM < due )) && due=$(( BLANK_LAST + BLANK_REARM ))
 	[[ -n "$AUTO_OFF_AT" ]] && (( 10#$AUTO_OFF_AT < due )) && due=$(( 10#$AUTO_OFF_AT ))
 	due=$(( due - now ))
@@ -733,6 +733,7 @@ watch_loop() {
 	read -r -t "$HELPER_READY_WAIT" -u 3 line
 	[[ "$line" == ready\ * ]] || fall_back_to_polling 'not ready'
 	LAST_LINE=$(date +%s)
+	run_pass   # a change made while the helper was arming sent no line
 
 	while :; do
 		w=$(next_wait)

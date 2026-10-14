@@ -781,6 +781,8 @@ nw() {
 expect_eq 'next_wait: nothing pending, last pass 10s ago → 50' 50 "$(nw)"
 expect_eq 'next_wait: floor streak 1, sampled 2s ago → 3' 3 \
 	"$(nw 'FLOOR_STREAK=1' 'LAST_SAMPLE=$(( fake_now - 2 ))')"
+expect_eq 'next_wait: last pass did not count, sampled 1s ago → 4' 4 \
+	"$(nw 'COUNTS_TOWARD_STREAK=0' 'LAST_SAMPLE=$(( fake_now - 1 ))')"
 expect_eq 'next_wait: a full streak is not waited on' 50 \
 	"$(nw 'FLOOR_STREAK=2' 'LAST_SAMPLE=$(( fake_now - 2 ))')"
 expect_eq 'next_wait: blanking armed 20s ago → 40' 40 "$(nw 'BLANK_LAST=$(( fake_now - 20 ))')"
@@ -855,6 +857,9 @@ wl_helper helper "echo \"ready \$\$\"
 $wl_relay"
 wl_helper helper-silent "$wl_relay"
 wl_helper helper-exit 'echo "ready $$"'
+wl_helper helper-flip "printf 'on\\n' > $wl_dir/mode
+echo \"ready \$\$\"
+$wl_relay"
 wl_helper helper-close "echo \"ready \$\$\"
 exec 1>&-
 $wl_relay"
@@ -911,6 +916,24 @@ printf '%s\n' "$(( $(date +%s) + 2 ))" > "$wl_dir/until"
 wl_timer_cut() { /usr/bin/grep -q 'cut reason=timer' "$wl_dir/log"; }
 expect_eq 'a quiet timeout drives the timer cut, and is not taken for EOF' 'yes off 0' \
 	"$(wl_yes wl_wait 4 wl_timer_cut) $(tr -d '[:space:]' < "$wl_dir/mode") $(wl_gone_lines)"
+wl_stop
+
+wl_start "$wl_dir/helper-flip"
+expect_eq 'a mode change while the helper starts is applied on ready' 'yes 0' \
+	"$(wl_yes wl_wait 2 wl_flag_on) $(wl_gone_lines)"
+wl_stop
+
+# A lid close under 5s after a counted pass does not count, and no further
+# line comes while the lid stays shut. The screen must still go dark in ~10s.
+wl_start "$wl_dir/helper"
+printf 'on\n' > "$wl_dir/mode"
+wl_wait 3 wl_helper_up
+sleep 0.5
+printf 'closed\n' > "$wl_dir/lid"
+echo lid > "$wl_dir/emit"
+wl_dark() { /usr/bin/grep -q '^pmset displaysleepnow$' "$wl_dir/calls"; }
+expect_eq 'a lid close inside the 5s gap still blanks the screen within 12s' 'yes 0' \
+	"$(wl_yes wl_wait 12 wl_dark) $(wl_gone_lines)"
 wl_stop
 
 wl_fallback_case() {
