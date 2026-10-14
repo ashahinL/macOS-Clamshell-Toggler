@@ -3,7 +3,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Platform: macOS 13+](https://img.shields.io/badge/Platform-macOS%2013%2B-brightgreen.svg)
 ![Architecture: Apple Silicon](https://img.shields.io/badge/Arch-Apple%20Silicon-orange.svg)
-![Version: 1.4.0](https://img.shields.io/badge/Version-1.4.0-purple.svg)
+![Version: 1.5.0](https://img.shields.io/badge/Version-1.5.0-purple.svg)
 
 Use your Mac with the lid closed **on battery power**, with no charger.
 
@@ -329,8 +329,9 @@ The suite stubs `ioreg`, `pmset`, and `sudo`, so it covers every state without
 unplugging a monitor. It checks:
 
 - **Mode to flag.** Every combination of mode and attached displays.
-- **Fail-safe.** A missing mode file, a garbage one, and a failing `ioreg` all
-  resolve to "let it sleep".
+- **Fail-safe.** A missing or garbage mode file falls back to Automatic. A
+  failing `ioreg`, even one that printed part of its output, counts as no
+  monitor, so Automatic lets it sleep.
 - **Daemon environment.** The watcher starts under `env -i`. This guards
   against the unset `$HOME` that once left it crash-looping.
 - **The built-in screen.** It turns off only with the lid shut, no monitor
