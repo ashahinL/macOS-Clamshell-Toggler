@@ -25,6 +25,8 @@ want_with() {
 
 	if [[ "$displays" == 'broken' ]]; then
 		printf '#!/bin/sh\necho "ioreg: failure" >&2\nexit 1\n' > "$tmp/ioreg"
+	elif [[ "$displays" == 'partial' ]]; then
+		printf '#!/bin/sh\necho "+-o DisplayPort  <class IOPortTransportStateDisplayPort>"\nexit 1\n' > "$tmp/ioreg"
 	else
 		{
 			echo '#!/bin/sh'
@@ -76,6 +78,7 @@ printf '\n\033[1mfail-safe\033[0m  (unknown state must never keep the Mac awake)
 check 'missing mode file        → auto'  1 missing 1
 check 'garbage mode file        → auto'  0 garbage 0
 check 'ioreg failure + auto     → sleep' broken auto 0
+check 'ioreg fails after output → sleep' partial auto 0
 
 printf '\n\033[1mdaemon environment\033[0m  (launchd supplies PATH and nothing else)\n\n'
 
@@ -295,6 +298,7 @@ cut_run() { # mode source pct floor lid displays polls [until [timer [lid-streak
 		sudo() {
 			printf 'sudo %s\n' "$*" >> "$cut_dir/calls"
 			[[ -z "${CUT_SUDO_FAIL:-}" ]] || return 1
+			[[ -z "${CUT_UNTIL_FAIL:-}" || "${!#}" != */until ]] || return 1
 			shift 3; "$@"
 		}
 		for ((i = 0; i < cut_polls; i++)); do read_power_settings; maybe_cut "$cut_disp"; done
@@ -490,6 +494,13 @@ tcli write_mode on >/dev/null
 expect_eq 'timer 60, on → until is an hour ahead' ok "$(until_near 3600)"
 expect_eq 'no half-written until.tmp is left behind' gone "$([[ -e "$cut_dir/until.tmp" ]] && echo there || echo gone)"
 
+timer_reset off 60
+mkdir "$cut_dir/until.tmp"
+tcli write_mode on >/dev/null 2>&1; rc=$?
+expect_eq 'timer 60, on, deadline write fails → error, mode stays off' 'nonzero off' \
+	"$( ((rc)) && printf nonzero || printf zero ) $(tr -d '[:space:]' < "$cut_dir/mode")"
+rmdir "$cut_dir/until.tmp"
+
 timer_reset on 60 "$((now + 1000))"
 tcli write_mode off >/dev/null
 expect_eq 'timer 60, off → until gone, timer kept' 'gone 60' \
@@ -682,6 +693,10 @@ CUT_AFTER=2 CUT_SRC2='AC Power' cut_run on 'Battery Power' 14 '' 0 0 4 '' 60
 expect_eq 'resume with timer 60 → until is about an hour ahead' ok "$(until_near 3600)"
 expect_eq 'resume with a timer still turns the mode on and drops the marker' 'on gone' \
 	"$(tr -d '[:space:]' < "$cut_dir/mode") $(resume_there)"
+
+CUT_UNTIL_FAIL=1 CUT_AFTER=2 CUT_SRC2='AC Power' cut_run on 'Battery Power' 14 '' 0 0 4 '' 60
+expect_eq 'resume whose deadline write fails → stays off, marker kept, no log' 'off there 0' \
+	"$(tr -d '[:space:]' < "$cut_dir/mode") $(resume_there) $(resume_logs)"
 
 printf 'on\n' > "$cut_dir/resume"
 tcli write_mode off >/dev/null

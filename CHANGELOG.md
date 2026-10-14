@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Rewriting `on` within a second of a failed cut now counts.** If a cutoff
   could not write `off`, writing `on` again in the same second was ignored. The
   mode file check now uses the file time to the nanosecond.
+- **A timer that fails to save no longer leaves Always Awake on.** `clamshell
+  on` wrote the mode before the deadline, so a failed deadline write left `on`
+  running with no timer. It now writes the deadline first. Resume on charger
+  had the same order and now stays off if the deadline cannot be written.
+- **A display probe that fails part way counts as no display.** If `ioreg`
+  printed some output and then failed, the partial count was used, which could
+  keep the Mac awake in Automatic.
 
 [1.5.0]: https://github.com/ashahinL/macOS-Clamshell-Toggler/releases/tag/v1.5.0
 

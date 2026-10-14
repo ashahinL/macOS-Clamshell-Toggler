@@ -84,8 +84,9 @@ PM_SLEEP_DISABLED=''; PM_LOW_POWER=''; PM_SOURCE=''; PM_PERCENT=''
 # external without needing a GUI session — which matters because the watcher
 # runs from a LaunchDaemon with no window server access.
 external_displays() {
-	ioreg -r -k SinkDeviceOUI -d1 -w0 2>/dev/null |
-		awk '/^\+-o /{n++} END{print n+0}'
+	local out
+	out=$(ioreg -r -k SinkDeviceOUI -d1 -w0 2>/dev/null) || { printf 0; return; }
+	awk '/^\+-o /{n++} END{print n+0}' <<< "$out"
 }
 
 lid_is_closed() {
@@ -151,17 +152,20 @@ read_mode() {
 }
 
 write_mode() {
-	local mode="$1" dir f
+	local mode="$1" dir f timer
 	dir="$(dirname "$MODE_FILE")"
 	mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
+
+	# The clock starts now, before the mode is written: a deadline that failed
+	# to write must not leave `on` running with no timer. `auto` and `off` drop
+	# any deadline but keep the saved length, so the next `on` starts a fresh one.
+	timer=$(read_timer)
+	if [[ "$mode" == on && "$timer" != off ]]; then
+		arm_until "$timer"
+	fi
 	printf '%s\n' "$mode" > "$MODE_FILE" 2>/dev/null ||
 		die "cannot write $MODE_FILE"
-
-	# The clock starts now. `auto` and `off` drop any deadline but keep the saved
-	# length, so the next `on` starts a fresh one.
-	if [[ "$mode" == on && "$(read_timer)" != off ]]; then
-		arm_until "$(read_timer)"
-	else
+	if [[ "$mode" != on || "$timer" == off ]]; then
 		f="$(config_path until)" && rm -f "$f"
 	fi
 
@@ -574,12 +578,12 @@ maybe_cut() {
 			if [[ "$PM_SOURCE" == 'AC Power' || "$PM_SOURCE" == 'UPS Power' ]]; then
 				(( COUNTS_TOWARD_STREAK )) && RESUME_STREAK=$(( RESUME_STREAK + 1 ))
 				if (( RESUME_STREAK >= LID_CONFIRM )); then
-					if write_as_owner "$MODE_FILE" on; then
-						timer=$(read_timer)
-						if [[ "$timer" != off ]]; then
-							write_as_owner "$(config_path until)" \
-								"$(( $(date +%s) + 10#$timer * 60 ))"
-						fi
+					# The deadline first, as in write_mode.
+					timer=$(read_timer)
+					if { [[ "$timer" == off ]] ||
+					     write_as_owner "$(config_path until)" \
+					         "$(( $(date +%s) + 10#$timer * 60 ))"; } &&
+					   write_as_owner "$MODE_FILE" on; then
 						remove_as_owner "$f"
 						RESUME_STREAK=0
 						printf '%s resume reason=ac percent=%s\n' \
