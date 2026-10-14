@@ -305,8 +305,9 @@ sudo clamshell-uninstall
 ```
 
 This works for a downloaded package and for a build from source. It unloads
-the daemon, removes the CLI, the watcher, the event helper and the app, and resets
-`disablesleep` to `0`.
+the daemon, removes the CLI, the watcher, the event helper, the app and its
+login agent, and resets `disablesleep` to `0`. If Clamshell still shows under
+System Settings → General → Login Items, remove it there.
 
 From a source checkout you can also run:
 

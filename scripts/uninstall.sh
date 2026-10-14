@@ -18,6 +18,17 @@ die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 say 'unloading daemon'
 launchctl bootout "system/$LABEL" 2>/dev/null || true
 
+# Open at Login may have fallen back to a LaunchAgent in the user's home.
+user="${SUDO_USER:-}"
+[[ -z "$user" || "$user" == 'root' ]] && user="$(stat -f '%Su' /dev/console)"
+home="$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+agent="$home/Library/LaunchAgents/local.clamshell.menubar.plist"
+if [[ -n "$home" && -e "$agent" ]]; then
+	say 'removing the login agent'
+	launchctl bootout "gui/$(id -u "$user")/local.clamshell.menubar" 2>/dev/null || true
+	rm -f "$agent"
+fi
+
 say 'removing files'
 echo '    /Applications/Clamshell.app, the CLI, the event helper, the watcher and the logs'
 pkill -x Clamshell || true

@@ -47,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **The menu bar icon no longer says "sleeps" when it cannot read the status.**
   It shows the warning icon and "Unable to read clamshell status", like the
   panel.
+- **Uninstall removes the login agent.** When Open at Login fell back to a
+  LaunchAgent, uninstall left it behind, pointing at the deleted app.
 
 [1.5.0]: https://github.com/ashahinL/macOS-Clamshell-Toggler/releases/tag/v1.5.0
 

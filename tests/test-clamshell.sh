@@ -1034,6 +1034,15 @@ else
 	fail=$((fail + 1))
 fi
 
+if /usr/bin/grep -q 'LaunchAgents/local.clamshell.menubar.plist' "$REPO/scripts/uninstall.sh" &&
+   /usr/bin/grep -q 'rm -f "$agent"' "$REPO/scripts/uninstall.sh"; then
+	printf '  \033[32mok\033[0m   uninstall removes the login agent\n'
+	pass=$((pass + 1))
+else
+	printf '  \033[31mFAIL\033[0m uninstall leaves the login agent behind\n'
+	fail=$((fail + 1))
+fi
+
 events_block="$(awk '/^events_src=/{on=1} on{print} on&&/^fi$/{exit}' "$inst")"
 run_events_block() {
 	bash -c 'set -euo pipefail
