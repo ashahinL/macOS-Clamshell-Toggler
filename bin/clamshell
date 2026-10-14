@@ -21,10 +21,10 @@ readonly MODE_POLL=1        # how often the chosen mode is re-read
 readonly DISPLAY_POLL=5     # how often displays are re-probed
 readonly BLANK_REARM=60     # how often display sleep is re-asserted
 readonly LID_CONFIRM=2      # polls the lid must read closed before blanking
-readonly HEARTBEAT=60       # most seconds between passes when nothing is due
-# Seconds without a line from the event helper before it counts as stalled. The
-# helper prints `alive` every 60s. Overridable so the tests need not wait.
-readonly STALL_LIMIT="${CLAMSHELL_STALL:-150}"
+readonly MAX_PASS_GAP=60
+readonly HELPER_ALIVE_EVERY=60  # gui/Events/main.swift prints `alive` this often
+readonly HELPER_READY_WAIT=10
+readonly STALL_LIMIT="${CLAMSHELL_STALL:-$(( HELPER_ALIVE_EVERY * 5 / 2 ))}"
 
 # ------------------------------------------------------------------ output ---
 
@@ -402,7 +402,6 @@ mode_stamp() {
 	stat -f '%Fm %z' "$MODE_FILE" 2>/dev/null
 }
 
-# Blanking state, carried across passes by run_pass.
 BLANK_STREAK=0   # consecutive polls the lid has read closed
 BLANK_LAST=0     # epoch seconds of the last display-sleep call
 
@@ -413,13 +412,12 @@ LPM_STREAK=0     # consecutive polls on battery with Low Power Mode on
 RESUME_STREAK=0  # consecutive charger polls before a floor or Low Power Mode cut resumes
 CUT_STAMP=''     # mode_stamp right after a cut; see held_by_cut
 
-# Pass scheduling, set by run_pass and maybe_cut, read by next_wait.
-SAMPLE=1         # 1 when this pass counts toward the streaks (1 for direct calls)
-LAST_SAMPLE=0    # epoch seconds of the last pass that counted
-LAST_PASS=0      # epoch seconds of the last pass
-LAST_LINE=0      # epoch seconds of the last line from the event helper
-DEADLINE=''      # the `until` epoch while the mode is on, else empty
-EVENTS_PID=''    # the event helper's pid
+COUNTS_TOWARD_STREAK=1
+LAST_SAMPLE=0
+LAST_PASS=0
+LAST_LINE=0
+AUTO_OFF_AT=''
+EVENTS_PID=''
 
 # pmset with its errors sent to the log. If bash cannot open the log, it skips
 # the command altogether, so `disablesleep 0` would never run: retry without it.
@@ -456,7 +454,7 @@ maybe_sleep_display() {
 		return
 	fi
 
-	(( SAMPLE )) && BLANK_STREAK=$(( BLANK_STREAK + 1 ))
+	(( COUNTS_TOWARD_STREAK )) && BLANK_STREAK=$(( BLANK_STREAK + 1 ))
 	(( BLANK_STREAK >= LID_CONFIRM )) || return
 
 	# Re-assert slowly. Something else may wake the panel while the lid is still
@@ -559,7 +557,7 @@ held_by_cut() {
 maybe_cut() {
 	local displays="$1" floor until_at f hold boot mode timer
 
-	DEADLINE=''
+	AUTO_OFF_AT=''
 	hold=$(config_path lpm-hold) || hold=''
 	mode=$(read_mode)
 
@@ -574,7 +572,7 @@ maybe_cut() {
 		if [[ "$mode" == off && -n "$f" && -e "$f" ]]; then
 			read_battery
 			if [[ "$PM_SOURCE" == 'AC Power' || "$PM_SOURCE" == 'UPS Power' ]]; then
-				(( SAMPLE )) && RESUME_STREAK=$(( RESUME_STREAK + 1 ))
+				(( COUNTS_TOWARD_STREAK )) && RESUME_STREAK=$(( RESUME_STREAK + 1 ))
 				if (( RESUME_STREAK >= LID_CONFIRM )); then
 					if write_as_owner "$MODE_FILE" on; then
 						timer=$(read_timer)
@@ -603,7 +601,7 @@ maybe_cut() {
 	held_by_cut && return
 
 	# Its own counter: BLANK_STREAK also resets on `screen on` and on a monitor.
-	if lid_is_closed; then (( SAMPLE )) && CUT_LID_STREAK=$(( CUT_LID_STREAK + 1 )); else CUT_LID_STREAK=0; fi
+	if lid_is_closed; then (( COUNTS_TOWARD_STREAK )) && CUT_LID_STREAK=$(( CUT_LID_STREAK + 1 )); else CUT_LID_STREAK=0; fi
 
 	read_battery
 
@@ -611,7 +609,7 @@ maybe_cut() {
 	# has no flaky reading. An unreadable one cuts too; the CLI writes it
 	# atomically, so that only comes from a hand edit.
 	until_at=$(read_until)
-	[[ "$until_at" =~ ^[0-9]+$ ]] && DEADLINE="$until_at"
+	[[ "$until_at" =~ ^[0-9]+$ ]] && AUTO_OFF_AT="$until_at"
 	if [[ "$until_at" == bad ]] ||
 	   { [[ -n "$until_at" ]] && (( 10#$until_at <= $(date +%s) )); }; then
 		f=$(config_path timer) && write_as_owner "$f" off
@@ -625,7 +623,7 @@ maybe_cut() {
 	floor=$(read_floor)
 	if [[ "$floor" != off && "$PM_SOURCE" != 'AC Power' && "$PM_SOURCE" != 'UPS Power' ]] &&
 	   { [[ -z "$PM_PERCENT" ]] || (( 10#$PM_PERCENT <= 10#$floor )); }; then
-		(( SAMPLE )) && FLOOR_STREAK=$(( FLOOR_STREAK + 1 ))
+		(( COUNTS_TOWARD_STREAK )) && FLOOR_STREAK=$(( FLOOR_STREAK + 1 ))
 		if (( FLOOR_STREAK >= LID_CONFIRM )); then
 			cut_off floor "$PM_PERCENT" "$displays"
 			return
@@ -648,7 +646,7 @@ maybe_cut() {
 	# Opt-in, so an empty reading (older macOS has no such key) does not cut.
 	if [[ "$(read_lpm)" == on && "$PM_SOURCE" == 'Battery Power' &&
 	      "$PM_LOW_POWER" == 1 && ( -z "$hold" || ! -e "$hold" ) ]]; then
-		(( SAMPLE )) && LPM_STREAK=$(( LPM_STREAK + 1 ))
+		(( COUNTS_TOWARD_STREAK )) && LPM_STREAK=$(( LPM_STREAK + 1 ))
 		if (( LPM_STREAK >= LID_CONFIRM )); then
 			cut_off lpm "$PM_PERCENT" "$displays"
 			return
@@ -658,21 +656,16 @@ maybe_cut() {
 	fi
 }
 
-# One pass: read everything, decide, apply. A positive reading counts toward a
-# streak only if the last counted one is DISPLAY_POLL old, so two events a
-# moment apart can never confirm a lid close, a cut or a resume. Resets and the
-# flag itself apply on every pass.
 run_pass() {
 	local now want displays
 	now=$(date +%s)
 	if (( now - LAST_SAMPLE >= DISPLAY_POLL )); then
-		SAMPLE=1
+		COUNTS_TOWARD_STREAK=1
 		LAST_SAMPLE=$now
 	else
-		SAMPLE=0
+		COUNTS_TOWARD_STREAK=0
 	fi
 
-	# Probed once and passed down, so the blanking check costs no extra ioreg.
 	displays=$(external_displays)
 	read_power_settings
 	maybe_cut "$displays"
@@ -683,12 +676,6 @@ run_pass() {
 	LAST_PASS=$now
 }
 
-# The fallback when the event helper is missing or gone: poll on two cadences.
-#
-# A mode switch is a deliberate act, and the user may well close the lid
-# straight afterwards. If the flag has not been applied by then, the Mac sleeps
-# and the switch looks broken. So the mode file is checked every second, which
-# costs a stat. Everything else is probed every DISPLAY_POLL seconds.
 poll_loop() {
 	local stamp='' new_stamp countdown=0
 
@@ -706,13 +693,10 @@ poll_loop() {
 	done
 }
 
-# Whole seconds, at least 1, until the soonest piece of due work: the next
-# streak sample, the blanking re-arm, the auto-off deadline, the stall check
-# or the heartbeat. All absolute, so an event never postpones due work.
 next_wait() {
 	local now due s
 	now=$(date +%s)
-	due=$(( LAST_PASS + HEARTBEAT ))
+	due=$(( LAST_PASS + MAX_PASS_GAP ))
 	(( LAST_LINE + STALL_LIMIT < due )) && due=$(( LAST_LINE + STALL_LIMIT ))
 	for s in "$BLANK_STREAK" "$CUT_LID_STREAK" "$FLOOR_STREAK" "$LPM_STREAK" "$RESUME_STREAK"; do
 		if (( s >= 1 && s < LID_CONFIRM )); then
@@ -721,14 +705,13 @@ next_wait() {
 		fi
 	done
 	(( BLANK_LAST > 0 && BLANK_LAST + BLANK_REARM < due )) && due=$(( BLANK_LAST + BLANK_REARM ))
-	[[ -n "$DEADLINE" ]] && (( 10#$DEADLINE < due )) && due=$(( 10#$DEADLINE ))
+	[[ -n "$AUTO_OFF_AT" ]] && (( 10#$AUTO_OFF_AT < due )) && due=$(( 10#$AUTO_OFF_AT ))
 	due=$(( due - now ))
 	(( due < 1 )) && due=1
 	printf '%s' "$due"
 }
 
-# Stop the helper, log why, and poll for the rest of this process's life.
-events_gone() {
+fall_back_to_polling() {
 	kill "$EVENTS_PID" 2>/dev/null
 	exec 3<&-
 	wait "$EVENTS_PID" 2>/dev/null
@@ -737,10 +720,6 @@ events_gone() {
 	poll_loop
 }
 
-# Block on the event helper and run a pass when it reports a change or when
-# next_wait says something is due. Any doubt about the helper falls back to
-# poll_loop, never to no loop.
-#
 # `read -t` returns 1 on both a timeout and EOF, so a return before the full
 # wait, or with the helper dead, counts as EOF. The inner `exec` keeps bash 3.2
 # from leaving a shell in between, so $! is the helper and its parent is us.
@@ -751,8 +730,8 @@ watch_loop() {
 	exec 3< <(exec "${CLAMSHELL_EVENTS:-/usr/local/bin/clamshell-events}" \
 		--parent $$ "$(dirname "$MODE_FILE")" 2>/dev/null)
 	EVENTS_PID=$!
-	read -r -t 10 -u 3 line
-	[[ "$line" == ready\ * ]] || events_gone 'not ready'
+	read -r -t "$HELPER_READY_WAIT" -u 3 line
+	[[ "$line" == ready\ * ]] || fall_back_to_polling 'not ready'
 	LAST_LINE=$(date +%s)
 
 	while :; do
@@ -767,9 +746,9 @@ watch_loop() {
 		elif (( SECONDS - t0 >= w )) && kill -0 "$EVENTS_PID" 2>/dev/null; then
 			run_pass
 		else
-			events_gone eof
+			fall_back_to_polling eof
 		fi
-		(( $(date +%s) - LAST_LINE > STALL_LIMIT )) && events_gone stalled
+		(( $(date +%s) - LAST_LINE > STALL_LIMIT )) && fall_back_to_polling stalled
 	done
 }
 

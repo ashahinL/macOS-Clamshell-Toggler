@@ -39,7 +39,6 @@ $(APP_BIN): $(SWIFT_SRC) $(INFO_PLIST)
 	@codesign --force --sign - $(APP_BUNDLE) 2>/dev/null || true
 	@echo "built $(APP_BUNDLE)"
 
-## Build the event helper
 events: $(EVENTS_BIN)
 
 $(EVENTS_BIN): $(EVENTS_SRC)

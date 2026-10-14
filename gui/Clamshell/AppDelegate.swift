@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var haveCutBaseline = false
     private var events: EventStream?
     private var streamUp = false
-    private var reading = false
+    private var readInFlight = false
     private var readQueued = false
 
     private let popover = NSPopover()
@@ -23,8 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     ))
 
     private static let openInterval: TimeInterval = 2
-    /// With the event helper up the timer is only a backstop.
-    private var idleInterval: TimeInterval { streamUp ? 120 : 15 }
+    private static let backstopInterval: TimeInterval = 120
+    private static let pollInterval: TimeInterval = 15
+    private var idleInterval: TimeInterval { streamUp ? Self.backstopInterval : Self.pollInterval }
 
     private static let logPath = "/var/log/clamshell.log"
 
@@ -48,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         apply()
 
         startTicker(interval: idleInterval)
-        startEvents()
+        ensureEventStream()
     }
 
     /// Deliberately on `.common` rather than the default run loop mode: while
@@ -57,15 +58,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func startTicker(interval: TimeInterval) {
         timer?.invalidate()
         let ticker = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            self?.startEvents()
+            self?.ensureEventStream()
             self?.refresh()
         }
         RunLoop.main.add(ticker, forMode: .common)
         timer = ticker
     }
 
-    /// Retried from every tick, so a helper that died or was missing comes back.
-    private func startEvents() {
+    private func ensureEventStream() {
         guard events == nil, CLI.isInstalled,
               let modeFile = status?.modeFile, !modeFile.isEmpty else { return }
         let stream = EventStream(
@@ -132,20 +132,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     // MARK: State
 
-    /// At most one read in flight and one queued: a burst of events or ticks
-    /// collapses into a single extra read instead of a pile of `clamshell json`.
     private func refresh() {
-        guard !reading else {
+        guard !readInFlight else {
             readQueued = true
             return
         }
-        reading = true
+        readInFlight = true
         let started = edits
         probe.async { [weak self] in
             let fresh = CLI.status()
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.reading = false
+                self.readInFlight = false
                 if self.edits == started {
                     self.noteResume(from: self.status, to: fresh)
                     self.status = fresh

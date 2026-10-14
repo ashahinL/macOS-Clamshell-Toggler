@@ -66,9 +66,7 @@ enum CLI {
     }
 }
 
-/// Runs `clamshell-events` and hands back each line it prints.
 final class EventStream {
-    /// Overridable only so a freshly built app can be checked against `build/clamshell-events`.
     static let path = ProcessInfo.processInfo.environment["CLAMSHELL_EVENTS"] ?? "/usr/local/bin/clamshell-events"
 
     private let onLine: (String) -> Void
@@ -88,8 +86,6 @@ final class EventStream {
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
 
-        // A read can end mid-line, so bytes are buffered until a newline arrives.
-        // The handler runs serially for one handle, so only it touches `buffer`.
         var buffer = Data()
         var ended = false
         let onLine = onLine, onEnd = onEnd

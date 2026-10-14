@@ -30,7 +30,6 @@ guard let copySym = dlsym(iokit, "IOPMCopySystemPowerSettings") else {
 }
 let copySettings = unsafeBitCast(copySym, to: CopyFn.self)
 
-// ---- parent watch
 let kq = kqueue()
 var procEvent = kevent(ident: UInt(parent), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD | EV_ONESHOT),
                        fflags: NOTE_EXIT, data: 0, udata: nil)
@@ -39,7 +38,6 @@ let parentSource = DispatchSource.makeReadSource(fileDescriptor: kq, queue: .mai
 parentSource.setEventHandler { exit(0) }
 parentSource.resume()
 
-// ---- output
 func emit(_ line: String) {
     let bytes = Array((line + "\n").utf8)
     var off = 0
@@ -61,7 +59,6 @@ func report(_ reason: String) {
     pending.insert(reason)
 }
 
-// ---- snapshot
 let rootDomain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
 
 func readDisplays() -> Int? {
@@ -104,7 +101,6 @@ func recheck() {
     lastDisplays = displays; lastLid = lid; lastSleepDisabled = sleepDisabled
 }
 
-// ---- config dir and files
 func watch(_ path: String, _ mask: DispatchSource.FileSystemEvent,
            onEvent: @escaping (DispatchSource.FileSystemEvent) -> Void) -> DispatchSourceFileSystemObject? {
     let fd = open(path, O_EVTONLY)
@@ -145,7 +141,6 @@ func armDir() -> Bool {
 
 _ = armDir()
 
-// ---- 5 s check
 let checkTimer = DispatchSource.makeTimerSource(queue: .main)
 checkTimer.schedule(deadline: .now() + 5, repeating: 5, leeway: .seconds(1))
 checkTimer.setEventHandler {
@@ -154,7 +149,6 @@ checkTimer.setEventHandler {
 }
 checkTimer.resume()
 
-// ---- IOKit notifications
 let port = IONotificationPortCreate(kIOMainPortDefault)!
 IONotificationPortSetDispatchQueue(port, .main)
 
@@ -198,7 +192,6 @@ if let sym = dlsym(iokit, "IOPMRegisterPrefsChangeNotification") {
     prefsHandle = unsafeBitCast(sym, to: RegFn.self)(.main) { recheck() }
 }
 
-// ---- power source, Low Power Mode
 var notifyTokens: [Int32] = []
 for name in ["com.apple.system.powersources.source", "com.apple.system.powersources.percent"] {
     var tok: Int32 = 0
@@ -210,7 +203,6 @@ for name in ["com.apple.system.powersources.source", "com.apple.system.powersour
 let lpmObserver = NotificationCenter.default.addObserver(forName: .NSProcessInfoPowerStateDidChange,
                                                          object: nil, queue: .main) { _ in report("lpm") }
 
-// ---- wake
 var rootConn: io_connect_t = 0
 var pmNotifier: io_object_t = 0
 var pmPort: IONotificationPortRef?
@@ -229,7 +221,6 @@ rootConn = IORegisterForSystemPower(nil, &pmPort, { _, _, type, arg in
 }, &pmNotifier)
 if let pmPort { IONotificationPortSetDispatchQueue(pmPort, .main) }
 
-// ---- heartbeat, so the reader can spot a stalled helper
 let aliveTimer = DispatchSource.makeTimerSource(queue: .main)
 aliveTimer.schedule(deadline: .now() + 60, repeating: 60, leeway: .seconds(1))
 aliveTimer.setEventHandler { emit("alive") }

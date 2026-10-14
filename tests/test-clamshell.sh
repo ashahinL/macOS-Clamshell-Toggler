@@ -383,10 +383,6 @@ held="$(
 )"
 expect_eq 'a cut holds until the mode file changes' 'true false []' "$held"
 
-# A real cut whose write of `off` fails, then the user writes `on` again within
-# the same second: same size, same whole-second mtime. The hold must still let
-# go. Retried if the second ticks over, so the old-format check never passes
-# vacuously.
 same_second="$(
 	set -- version
 	export CLAMSHELL_MODE_FILE="$cut_dir/mode" CLAMSHELL_LOG_FILE="$cut_dir/log"
@@ -768,10 +764,7 @@ printf '\n\033[1mwatch loop\033[0m  (wait on the event helper, poll if it fails)
 wl_dir="$(mktemp -d)"
 [[ -d "$wl_dir" ]] || { printf 'watch loop: no temp dir\n' >&2; exit 1; }
 
-# next_wait reads only globals and the clock, so it is driven directly. Each
-# row: the globals to set (relative to a fixed fake_now), then the expected wait.
-# Not `now`: next_wait's own `local now` would hide it from the date stub.
-nw() { # assignments...
+nw() {
 	local sets=("$@")
 	(
 		set -- version
@@ -779,7 +772,6 @@ nw() { # assignments...
 		source "$CLAMSHELL" >/dev/null
 		fake_now=1000000
 		date() { printf '%s' "$fake_now"; }
-		# Read by next_wait in the sourced script.
 		# shellcheck disable=SC2034
 		LAST_PASS=$(( fake_now - 10 )) LAST_LINE=$fake_now
 		for a in ${sets[@]+"${sets[@]}"}; do eval "$a"; done
@@ -792,11 +784,10 @@ expect_eq 'next_wait: floor streak 1, sampled 2s ago → 3' 3 \
 expect_eq 'next_wait: a full streak is not waited on' 50 \
 	"$(nw 'FLOOR_STREAK=2' 'LAST_SAMPLE=$(( fake_now - 2 ))')"
 expect_eq 'next_wait: blanking armed 20s ago → 40' 40 "$(nw 'BLANK_LAST=$(( fake_now - 20 ))')"
-expect_eq 'next_wait: deadline in 7s → 7' 7 "$(nw 'DEADLINE=$(( fake_now + 7 ))')"
-expect_eq 'next_wait: deadline passed → 1' 1 "$(nw 'DEADLINE=$(( fake_now - 5 ))')"
+expect_eq 'next_wait: deadline in 7s → 7' 7 "$(nw 'AUTO_OFF_AT=$(( fake_now + 7 ))')"
+expect_eq 'next_wait: deadline passed → 1' 1 "$(nw 'AUTO_OFF_AT=$(( fake_now - 5 ))')"
 expect_eq 'next_wait: last helper line 149s ago → 1' 1 "$(nw 'LAST_LINE=$(( fake_now - 149 ))')"
 
-# Streak spacing through run_pass: lid shut, mode on, no monitor, screen off.
 printf 'on\n' > "$wl_dir/mode"
 spacing="$(
 	set -- version
@@ -826,7 +817,7 @@ expect_eq 'two passes in the same second count once; one 5s later counts; lid op
 
 # The real watch_loop, in its own bash process: in a subshell $$ would be this
 # test's pid (bash 3.2 has no BASHPID) and the helper would watch the wrong
-# parent. Args: dir helper [stall].
+# parent.
 cat > "$wl_dir/runner.sh" <<EOF
 d="\$1"
 export CLAMSHELL_MODE_FILE="\$d/mode" CLAMSHELL_LOG_FILE="\$d/log" CLAMSHELL_EVENTS="\$2"
@@ -852,9 +843,7 @@ pmset() {
 watch_loop
 EOF
 
-# Stub helpers. Each records its pid, then behaves as named. The normal one
-# relays $wl_dir/emit and exits once its --parent is gone.
-wl_helper() { # name body
+wl_helper() {
 	printf '#!/bin/bash\nparent="$2"\necho $$ > %q/helper.pid\n%s\n' "$wl_dir" "$2" > "$wl_dir/$1"
 	chmod +x "$wl_dir/$1"
 }
@@ -870,7 +859,7 @@ wl_helper helper-close "echo \"ready \$\$\"
 exec 1>&-
 $wl_relay"
 
-wl_start() { # helper [stall] [env -i]
+wl_start() {
 	rm -f "$wl_dir/emit" "$wl_dir/helper.pid" "$wl_dir/until"
 	printf 'off\n' > "$wl_dir/mode"
 	printf '0\n' > "$wl_dir/flag"
@@ -892,8 +881,7 @@ wl_stop() {
 wl_pid=''
 trap 'wl_stop' EXIT
 
-# Polls every 0.1s for up to $1 seconds; true as soon as the test passes.
-wl_wait() { # seconds test...
+wl_wait() {
 	local n=$(( $1 * 10 ))
 	shift
 	while (( n-- > 0 )); do "$@" && return 0; sleep 0.1; done
@@ -905,10 +893,10 @@ wl_has_gone() { [[ "$(wl_gone_lines)" -ge 1 ]]; }
 wl_helper_up() { [[ -s "$wl_dir/helper.pid" ]] && kill -0 "$(cat "$wl_dir/helper.pid")" 2>/dev/null; }
 wl_yes() { "$@" && echo yes || echo no; }
 
-wl_event_case() { # name [env-i]
+wl_event_case() {
 	wl_start "$wl_dir/helper" '' "${2:-}"
 	wl_wait 3 wl_helper_up
-	sleep 0.3   # past the ready line, into the wait
+	sleep 0.3
 	printf 'on\n' > "$wl_dir/mode"
 	echo config > "$wl_dir/emit"
 	expect_eq "$1" 'yes 0' "$(wl_yes wl_wait 1 wl_flag_on) $(wl_gone_lines)"
@@ -925,10 +913,10 @@ expect_eq 'a quiet timeout drives the timer cut, and is not taken for EOF' 'yes 
 	"$(wl_yes wl_wait 4 wl_timer_cut) $(tr -d '[:space:]' < "$wl_dir/mode") $(wl_gone_lines)"
 wl_stop
 
-wl_fallback_case() { # name helper [stall] [check-helper-gone]
+wl_fallback_case() {
 	local gone=''
 	wl_start "$2" "${3:-}"
-	wl_wait 12 wl_has_gone   # the ready wait is 10s
+	wl_wait 12 wl_has_gone
 	sleep 0.2
 	printf 'on\n' > "$wl_dir/mode"
 	[[ -z "${4:-}" ]] || gone=" $(wl_yes eval '! wl_helper_up')"
@@ -990,8 +978,6 @@ else
 	fail=$((fail + 1))
 fi
 
-# The watcher starts the event helper as soon as it is bootstrapped, so the
-# helper has to be in place first.
 n_events="$(line_of 'install -o root -g wheel -m 755 "\$events_src" "\$EVENTS_BIN"')"
 if [[ -n "$n_events" && -n "$n_bootstrap" ]] && (( n_events < n_bootstrap )); then
 	printf '  \033[32mok\033[0m   event helper is installed before the daemon starts\n'
@@ -1010,12 +996,8 @@ else
 	fail=$((fail + 1))
 fi
 
-# Run the installer's helper block on its own, with `install` stubbed, so the
-# source choice and the missing-helper path are exercised without root. A
-# missing helper must warn and carry on: under `set -e` an error there would
-# abort the install before the daemon is loaded.
 events_block="$(awk '/^events_src=/{on=1} on{print} on&&/^fi$/{exit}' "$inst")"
-run_events_block() {  # $1 = fake REPO; prints the chosen source or the warning
+run_events_block() {
 	bash -c 'set -euo pipefail
 		REPO="$1" EVENTS_BIN=/nonexistent/clamshell-events
 		say()     { :; }
