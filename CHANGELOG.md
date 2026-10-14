@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-10-14
+
+### Changed
+- **The watcher waits for events instead of polling.** Before, it checked the
+  mode file every second and ran a full check every 5 seconds, starting several
+  small programs each time. Activity Monitor ranked Clamshell high in energy
+  use. A new helper, `clamshell-events`, watches the config folder, the lid,
+  displays, the power source and battery level, Low Power Mode, the sleep flag
+  and wake from sleep. It prints a line only when something changed. The
+  watcher runs its check then, when a cutoff or the screen re-arm is due, and
+  at least once a minute.
+- **The helper decides nothing.** Every 5 seconds it re-reads the display
+  count, the lid and the sleep flag itself, without starting any programs.
+  All the rules stay in `bin/clamshell`.
+- **Polling is the fallback.** If the helper is missing, never starts, exits or
+  goes quiet for 150 seconds, the watcher logs `events helper gone (<reason>),
+  polling` and goes back to the 1.4.0 polling.
+- **Readings that confirm a cutoff count only 5 seconds apart.** The lid, the
+  battery floor, Low Power Mode and resume on charger still need two readings,
+  so two events a moment apart cannot confirm anything.
+- **The app reads the status when the helper reports a change,** plus every 2
+  minutes as a backstop, instead of every 15 seconds. Without the helper it
+  goes back to every 15 seconds. The open panel still refreshes every 2
+  seconds.
+- **The installer, the uninstaller and the `.pkg` include the helper.** `make`
+  builds it, and `make events` builds it alone. A missing helper is only a
+  warning at install time.
+
+### Fixed
+- **Rewriting `on` within a second of a failed cut now counts.** If a cutoff
+  could not write `off`, writing `on` again in the same second was ignored. The
+  mode file check now uses the file time to the nanosecond.
+
+[1.5.0]: https://github.com/ashahinL/macOS-Clamshell-Toggler/releases/tag/v1.5.0
+
 ## [1.4.0] - 2026-10-12
 
 ### Added
