@@ -19,12 +19,15 @@ VERSION     := $(shell sed -n "s/^readonly VERSION='\(.*\)'/\1/p" bin/clamshell)
 SWIFTC      := swiftc
 SWIFTFLAGS  := -O -target arm64-apple-macos13.0
 
+EVENTS_BIN  := $(BUILD_DIR)/clamshell-events
+EVENTS_SRC  := gui/Events/main.swift
+
 PREVIEW_DIR := $(BUILD_DIR)/preview
 PREVIEW_SRC := gui/Clamshell/CLI.swift gui/Clamshell/Panel.swift gui/Preview/main.swift
 
-.PHONY: all app preview test pkg install install-cli install-app uninstall clean help
+.PHONY: all app events preview test pkg install install-cli install-app uninstall clean help
 
-all: app
+all: app events
 
 ## Build the menu bar app bundle
 app: $(APP_BIN)
@@ -35,6 +38,14 @@ $(APP_BIN): $(SWIFT_SRC) $(INFO_PLIST)
 	$(SWIFTC) $(SWIFTFLAGS) -o $@ $(SWIFT_SRC)
 	@codesign --force --sign - $(APP_BUNDLE) 2>/dev/null || true
 	@echo "built $(APP_BUNDLE)"
+
+## Build the event helper
+events: $(EVENTS_BIN)
+
+$(EVENTS_BIN): $(EVENTS_SRC)
+	@mkdir -p $(BUILD_DIR)
+	$(SWIFTC) $(SWIFTFLAGS) -o $@ $(EVENTS_SRC)
+	@codesign --force --sign - $@ 2>/dev/null || true
 
 ## Render the panel to PNGs in build/preview
 preview:
@@ -112,7 +123,8 @@ clean:
 help:
 	@echo "clamshell — make targets"
 	@echo ""
-	@echo "  make                    build the menu bar app"
+	@echo "  make                    build the menu bar app and event helper"
+	@echo "  make events             build the event helper only"
 	@echo "  make preview            render the panel to build/preview/*.png"
 	@echo "  make test               run the test suite"
 	@echo "  make pkg                build the unsigned installer"
