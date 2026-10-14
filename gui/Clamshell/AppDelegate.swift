@@ -8,6 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var status: Status?
     private var lastCutSeen: String?
     private var haveCutBaseline = false
+    private var events: EventStream?
+    private var streamUp = false
+    private var reading = false
+    private var readQueued = false
 
     private let popover = NSPopover()
     private var lastClose = Date.distantPast
@@ -19,7 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     ))
 
     private static let openInterval: TimeInterval = 2
-    private static let idleInterval: TimeInterval = 15
+    /// With the event helper up the timer is only a backstop.
+    private var idleInterval: TimeInterval { streamUp ? 120 : 15 }
 
     private static let logPath = "/var/log/clamshell.log"
 
@@ -42,7 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         noteCut(status)
         apply()
 
-        startTicker(interval: Self.idleInterval)
+        startTicker(interval: idleInterval)
+        startEvents()
     }
 
     /// Deliberately on `.common` rather than the default run loop mode: while
@@ -51,14 +57,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func startTicker(interval: TimeInterval) {
         timer?.invalidate()
         let ticker = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            self?.startEvents()
             self?.refresh()
         }
         RunLoop.main.add(ticker, forMode: .common)
         timer = ticker
     }
 
+    /// Retried from every tick, so a helper that died or was missing comes back.
+    private func startEvents() {
+        guard events == nil, CLI.isInstalled,
+              let modeFile = status?.modeFile, !modeFile.isEmpty else { return }
+        let stream = EventStream(
+            onLine: { [weak self] line in
+                guard let self else { return }
+                if line.hasPrefix("ready") {
+                    self.streamUp = true
+                    if !self.popover.isShown { self.startTicker(interval: self.idleInterval) }
+                    self.refresh()
+                } else if line != "alive" {
+                    self.refresh()
+                }
+            },
+            onEnd: { [weak self] in
+                guard let self else { return }
+                self.streamUp = false
+                self.events = nil
+                if !self.popover.isShown { self.startTicker(interval: self.idleInterval) }
+            }
+        )
+        events = stream
+        if !stream.start(configDir: (modeFile as NSString).deletingLastPathComponent) {
+            events = nil
+        }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        refresh()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        events?.stop()
     }
 
     /// A transient popover closes itself on the mouse-down of a click on the
@@ -87,21 +127,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
-        startTicker(interval: Self.idleInterval)
+        startTicker(interval: idleInterval)
     }
 
     // MARK: State
 
+    /// At most one read in flight and one queued: a burst of events or ticks
+    /// collapses into a single extra read instead of a pile of `clamshell json`.
     private func refresh() {
+        guard !reading else {
+            readQueued = true
+            return
+        }
+        reading = true
         let started = edits
         probe.async { [weak self] in
             let fresh = CLI.status()
             DispatchQueue.main.async {
-                guard let self, self.edits == started else { return }
-                self.noteResume(from: self.status, to: fresh)
-                self.status = fresh
-                self.noteCut(fresh)
-                self.apply()
+                guard let self else { return }
+                self.reading = false
+                if self.edits == started {
+                    self.noteResume(from: self.status, to: fresh)
+                    self.status = fresh
+                    self.noteCut(fresh)
+                    self.apply()
+                }
+                if self.readQueued {
+                    self.readQueued = false
+                    self.refresh()
+                }
             }
         }
     }
