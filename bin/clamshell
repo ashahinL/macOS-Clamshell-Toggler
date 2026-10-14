@@ -21,6 +21,10 @@ readonly MODE_POLL=1        # how often the chosen mode is re-read
 readonly DISPLAY_POLL=5     # how often displays are re-probed
 readonly BLANK_REARM=60     # how often display sleep is re-asserted
 readonly LID_CONFIRM=2      # polls the lid must read closed before blanking
+readonly HEARTBEAT=60       # most seconds between passes when nothing is due
+# Seconds without a line from the event helper before it counts as stalled. The
+# helper prints `alive` every 60s. Overridable so the tests need not wait.
+readonly STALL_LIMIT="${CLAMSHELL_STALL:-150}"
 
 # ------------------------------------------------------------------ output ---
 
@@ -408,6 +412,14 @@ LPM_STREAK=0     # consecutive polls on battery with Low Power Mode on
 RESUME_STREAK=0  # consecutive charger polls before a floor or Low Power Mode cut resumes
 CUT_STAMP=''     # mode_stamp right after a cut; see held_by_cut
 
+# Pass scheduling, set by run_pass and maybe_cut, read by next_wait.
+SAMPLE=1         # 1 when this pass counts toward the streaks (1 for direct calls)
+LAST_SAMPLE=0    # epoch seconds of the last pass that counted
+LAST_PASS=0      # epoch seconds of the last pass
+LAST_LINE=0      # epoch seconds of the last line from the event helper
+DEADLINE=''      # the `until` epoch while the mode is on, else empty
+EVENTS_PID=''    # the event helper's pid
+
 # pmset with its errors sent to the log. If bash cannot open the log, it skips
 # the command altogether, so `disablesleep 0` would never run: retry without it.
 # A pmset that fails for another reason runs twice, which these commands allow.
@@ -443,7 +455,7 @@ maybe_sleep_display() {
 		return
 	fi
 
-	BLANK_STREAK=$(( BLANK_STREAK + 1 ))
+	(( SAMPLE )) && BLANK_STREAK=$(( BLANK_STREAK + 1 ))
 	(( BLANK_STREAK >= LID_CONFIRM )) || return
 
 	# Re-assert slowly. Something else may wake the panel while the lid is still
@@ -546,6 +558,7 @@ held_by_cut() {
 maybe_cut() {
 	local displays="$1" floor until_at f hold boot mode timer
 
+	DEADLINE=''
 	hold=$(config_path lpm-hold) || hold=''
 	mode=$(read_mode)
 
@@ -560,7 +573,7 @@ maybe_cut() {
 		if [[ "$mode" == off && -n "$f" && -e "$f" ]]; then
 			read_battery
 			if [[ "$PM_SOURCE" == 'AC Power' || "$PM_SOURCE" == 'UPS Power' ]]; then
-				RESUME_STREAK=$(( RESUME_STREAK + 1 ))
+				(( SAMPLE )) && RESUME_STREAK=$(( RESUME_STREAK + 1 ))
 				if (( RESUME_STREAK >= LID_CONFIRM )); then
 					if write_as_owner "$MODE_FILE" on; then
 						timer=$(read_timer)
@@ -589,7 +602,7 @@ maybe_cut() {
 	held_by_cut && return
 
 	# Its own counter: BLANK_STREAK also resets on `screen on` and on a monitor.
-	if lid_is_closed; then CUT_LID_STREAK=$(( CUT_LID_STREAK + 1 )); else CUT_LID_STREAK=0; fi
+	if lid_is_closed; then (( SAMPLE )) && CUT_LID_STREAK=$(( CUT_LID_STREAK + 1 )); else CUT_LID_STREAK=0; fi
 
 	read_battery
 
@@ -597,6 +610,7 @@ maybe_cut() {
 	# has no flaky reading. An unreadable one cuts too; the CLI writes it
 	# atomically, so that only comes from a hand edit.
 	until_at=$(read_until)
+	[[ "$until_at" =~ ^[0-9]+$ ]] && DEADLINE="$until_at"
 	if [[ "$until_at" == bad ]] ||
 	   { [[ -n "$until_at" ]] && (( 10#$until_at <= $(date +%s) )); }; then
 		f=$(config_path timer) && write_as_owner "$f" off
@@ -610,7 +624,7 @@ maybe_cut() {
 	floor=$(read_floor)
 	if [[ "$floor" != off && "$PM_SOURCE" != 'AC Power' && "$PM_SOURCE" != 'UPS Power' ]] &&
 	   { [[ -z "$PM_PERCENT" ]] || (( 10#$PM_PERCENT <= 10#$floor )); }; then
-		FLOOR_STREAK=$(( FLOOR_STREAK + 1 ))
+		(( SAMPLE )) && FLOOR_STREAK=$(( FLOOR_STREAK + 1 ))
 		if (( FLOOR_STREAK >= LID_CONFIRM )); then
 			cut_off floor "$PM_PERCENT" "$displays"
 			return
@@ -633,7 +647,7 @@ maybe_cut() {
 	# Opt-in, so an empty reading (older macOS has no such key) does not cut.
 	if [[ "$(read_lpm)" == on && "$PM_SOURCE" == 'Battery Power' &&
 	      "$PM_LOW_POWER" == 1 && ( -z "$hold" || ! -e "$hold" ) ]]; then
-		LPM_STREAK=$(( LPM_STREAK + 1 ))
+		(( SAMPLE )) && LPM_STREAK=$(( LPM_STREAK + 1 ))
 		if (( LPM_STREAK >= LID_CONFIRM )); then
 			cut_off lpm "$PM_PERCENT" "$displays"
 			return
@@ -643,19 +657,39 @@ maybe_cut() {
 	fi
 }
 
-cmd_watch() {
-	[[ $EUID -eq 0 ]] || die "--watch must run as root (it is started by launchd)"
+# One pass: read everything, decide, apply. A positive reading counts toward a
+# streak only if the last counted one is DISPLAY_POLL old, so two events a
+# moment apart can never confirm a lid close, a cut or a resume. Resets and the
+# flag itself apply on every pass.
+run_pass() {
+	local now want displays
+	now=$(date +%s)
+	if (( now - LAST_SAMPLE >= DISPLAY_POLL )); then
+		SAMPLE=1
+		LAST_SAMPLE=$now
+	else
+		SAMPLE=0
+	fi
 
-	# Two cadences, because the two inputs have very different urgency.
-	#
-	# A mode switch is a deliberate act, and the user may well close the lid
-	# straight afterwards — if the flag has not been applied by then, the Mac
-	# sleeps and the switch looks broken. So the mode file is checked every
-	# second, which costs a stat.
-	#
-	# Display changes are not raced against anything in the same way, and
-	# probing costs ~23ms of ioreg, so that stays on the slower cadence.
-	local want stamp='' new_stamp countdown=0 displays
+	# Probed once and passed down, so the blanking check costs no extra ioreg.
+	displays=$(external_displays)
+	read_power_settings
+	maybe_cut "$displays"
+	want=$(want_for_displays "$displays")
+	held_by_cut && want=0
+	apply_sleep_flag "$want" "$displays" "$PM_SLEEP_DISABLED"
+	maybe_sleep_display "$want" "$displays"
+	LAST_PASS=$now
+}
+
+# The fallback when the event helper is missing or gone: poll on two cadences.
+#
+# A mode switch is a deliberate act, and the user may well close the lid
+# straight afterwards. If the flag has not been applied by then, the Mac sleeps
+# and the switch looks broken. So the mode file is checked every second, which
+# costs a stat. Everything else is probed every DISPLAY_POLL seconds.
+poll_loop() {
+	local stamp='' new_stamp countdown=0
 
 	while :; do
 		new_stamp="$(mode_stamp)"
@@ -663,21 +697,84 @@ cmd_watch() {
 		if [[ "$new_stamp" != "$stamp" ]] || (( countdown <= 0 )); then
 			stamp="$new_stamp"
 			countdown=$DISPLAY_POLL
-
-			# Probed once and passed down, so adding the blanking check costs
-			# one extra ioreg per poll rather than three.
-			displays=$(external_displays)
-			read_power_settings
-			maybe_cut "$displays"
-			want=$(want_for_displays "$displays")
-			held_by_cut && want=0
-			apply_sleep_flag "$want" "$displays" "$PM_SLEEP_DISABLED"
-			maybe_sleep_display "$want" "$displays"
+			run_pass
 		fi
 
 		sleep "$MODE_POLL"
 		countdown=$(( countdown - MODE_POLL ))
 	done
+}
+
+# Whole seconds, at least 1, until the soonest piece of due work: the next
+# streak sample, the blanking re-arm, the auto-off deadline, the stall check
+# or the heartbeat. All absolute, so an event never postpones due work.
+next_wait() {
+	local now due s
+	now=$(date +%s)
+	due=$(( LAST_PASS + HEARTBEAT ))
+	(( LAST_LINE + STALL_LIMIT < due )) && due=$(( LAST_LINE + STALL_LIMIT ))
+	for s in "$BLANK_STREAK" "$CUT_LID_STREAK" "$FLOOR_STREAK" "$LPM_STREAK" "$RESUME_STREAK"; do
+		if (( s >= 1 && s < LID_CONFIRM )); then
+			(( LAST_SAMPLE + DISPLAY_POLL < due )) && due=$(( LAST_SAMPLE + DISPLAY_POLL ))
+			break
+		fi
+	done
+	(( BLANK_LAST > 0 && BLANK_LAST + BLANK_REARM < due )) && due=$(( BLANK_LAST + BLANK_REARM ))
+	[[ -n "$DEADLINE" ]] && (( 10#$DEADLINE < due )) && due=$(( 10#$DEADLINE ))
+	due=$(( due - now ))
+	(( due < 1 )) && due=1
+	printf '%s' "$due"
+}
+
+# Stop the helper, log why, and poll for the rest of this process's life.
+events_gone() {
+	kill "$EVENTS_PID" 2>/dev/null
+	exec 3<&-
+	wait "$EVENTS_PID" 2>/dev/null
+	printf '%s events helper gone (%s), polling\n' \
+		"$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG_FILE"
+	poll_loop
+}
+
+# Block on the event helper and run a pass when it reports a change or when
+# next_wait says something is due. Any doubt about the helper falls back to
+# poll_loop, never to no loop.
+#
+# `read -t` returns 1 on both a timeout and EOF, so a return before the full
+# wait, or with the helper dead, counts as EOF. The inner `exec` keeps bash 3.2
+# from leaving a shell in between, so $! is the helper and its parent is us.
+# The helper's stderr goes to /dev/null: a log bash cannot open would skip it.
+watch_loop() {
+	local line='' w t0 rc
+	run_pass
+	exec 3< <(exec "${CLAMSHELL_EVENTS:-/usr/local/bin/clamshell-events}" \
+		--parent $$ "$(dirname "$MODE_FILE")" 2>/dev/null)
+	EVENTS_PID=$!
+	read -r -t 3 -u 3 line
+	[[ "$line" == ready\ * ]] || events_gone 'not ready'
+	LAST_LINE=$(date +%s)
+
+	while :; do
+		w=$(next_wait)
+		t0=$SECONDS
+		line=''
+		read -r -t "$w" -u 3 line
+		rc=$?
+		if (( rc == 0 )); then
+			LAST_LINE=$(date +%s)
+			[[ "$line" == alive ]] || run_pass
+		elif (( SECONDS - t0 >= w )) && kill -0 "$EVENTS_PID" 2>/dev/null; then
+			run_pass
+		else
+			events_gone eof
+		fi
+		(( $(date +%s) - LAST_LINE > STALL_LIMIT )) && events_gone stalled
+	done
+}
+
+cmd_watch() {
+	[[ $EUID -eq 0 ]] || die "--watch must run as root (it is started by launchd)"
+	watch_loop
 }
 
 cmd_status() {

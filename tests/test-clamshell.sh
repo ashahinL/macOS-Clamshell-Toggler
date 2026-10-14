@@ -721,6 +721,190 @@ expect_eq 'json: a quote, a backslash and a tab in the mode file path → valid,
 
 rm -rf "$full_dir" "$bare_dir"
 
+printf '\n\033[1mwatch loop\033[0m  (wait on the event helper, poll if it fails)\n\n'
+
+wl_dir="$(mktemp -d)"
+[[ -d "$wl_dir" ]] || { printf 'watch loop: no temp dir\n' >&2; exit 1; }
+
+# next_wait reads only globals and the clock, so it is driven directly. Each
+# row: the globals to set (relative to a fixed fake_now), then the expected wait.
+# Not `now`: next_wait's own `local now` would hide it from the date stub.
+nw() { # assignments...
+	local sets=("$@")
+	(
+		set -- version
+		# shellcheck disable=SC1090
+		source "$CLAMSHELL" >/dev/null
+		fake_now=1000000
+		date() { printf '%s' "$fake_now"; }
+		# Read by next_wait in the sourced script.
+		# shellcheck disable=SC2034
+		LAST_PASS=$(( fake_now - 10 )) LAST_LINE=$fake_now
+		for a in ${sets[@]+"${sets[@]}"}; do eval "$a"; done
+		next_wait
+	)
+}
+expect_eq 'next_wait: nothing pending, last pass 10s ago → 50' 50 "$(nw)"
+expect_eq 'next_wait: floor streak 1, sampled 2s ago → 3' 3 \
+	"$(nw 'FLOOR_STREAK=1' 'LAST_SAMPLE=$(( fake_now - 2 ))')"
+expect_eq 'next_wait: a full streak is not waited on' 50 \
+	"$(nw 'FLOOR_STREAK=2' 'LAST_SAMPLE=$(( fake_now - 2 ))')"
+expect_eq 'next_wait: blanking armed 20s ago → 40' 40 "$(nw 'BLANK_LAST=$(( fake_now - 20 ))')"
+expect_eq 'next_wait: deadline in 7s → 7' 7 "$(nw 'DEADLINE=$(( fake_now + 7 ))')"
+expect_eq 'next_wait: deadline passed → 1' 1 "$(nw 'DEADLINE=$(( fake_now - 5 ))')"
+expect_eq 'next_wait: last helper line 149s ago → 1' 1 "$(nw 'LAST_LINE=$(( fake_now - 149 ))')"
+
+# Streak spacing through run_pass: lid shut, mode on, no monitor, screen off.
+printf 'on\n' > "$wl_dir/mode"
+spacing="$(
+	set -- version
+	export CLAMSHELL_MODE_FILE="$wl_dir/mode" CLAMSHELL_LOG_FILE="$wl_dir/spacing.log"
+	# shellcheck disable=SC1090
+	source "$CLAMSHELL" >/dev/null
+	t=1000000 lid=0
+	date() { if [[ "${1:-}" == +%s ]]; then printf '%s' "$t"; else command date "$@"; fi; }
+	external_displays() { printf '0'; }
+	read_power_settings() { PM_SLEEP_DISABLED=1 PM_LOW_POWER=0; }
+	read_battery() { PM_SOURCE='AC Power' PM_PERCENT=80; }
+	lid_is_closed() { return "$lid"; }
+	read_screen() { printf 'off'; }
+	read_mode() { printf 'on'; }
+	pmset() { printf 'pmset %s\n' "$*" >> "$wl_dir/spacing.calls"; }
+	: > "$wl_dir/spacing.calls"
+	sleeps() { /usr/bin/grep -c displaysleepnow "$wl_dir/spacing.calls" || true; }
+	run_pass; run_pass
+	printf '%s/%s ' "$BLANK_STREAK" "$(sleeps)"
+	t=$(( t + 5 )); run_pass
+	printf '%s/%s ' "$BLANK_STREAK" "$(sleeps)"
+	lid=1; run_pass
+	printf '%s/%s' "$BLANK_STREAK" "$(sleeps)"
+)"
+expect_eq 'two passes in the same second count once; one 5s later counts; lid open resets at once' \
+	'1/0 2/1 0/1' "$spacing"
+
+# The real watch_loop, in its own bash process: in a subshell $$ would be this
+# test's pid (bash 3.2 has no BASHPID) and the helper would watch the wrong
+# parent. Args: dir helper [stall].
+cat > "$wl_dir/runner.sh" <<EOF
+d="\$1"
+export CLAMSHELL_MODE_FILE="\$d/mode" CLAMSHELL_LOG_FILE="\$d/log" CLAMSHELL_EVENTS="\$2"
+[[ -z "\${3:-}" ]] || export CLAMSHELL_STALL="\$3"
+set -- version
+source "$CLAMSHELL" >/dev/null
+external_displays() { cat "\$d/displays"; }
+lid_is_closed() { [[ "\$(cat "\$d/lid")" == closed ]]; }
+sudo() { shift 3; "\$@"; }
+pmset() {
+	if [[ "\${1:-}" == -g && "\${2:-}" == batt ]]; then
+		printf "Now drawing from 'AC Power'\n"
+		printf ' -InternalBattery-0 (id=1)\t80%%; charged; 0:00 remaining present: true\n'
+	elif [[ "\${1:-}" == -g ]]; then
+		printf ' SleepDisabled\t\t%s\n lowpowermode\t\t0\n' "\$(cat "\$d/flag")"
+	elif [[ "\${1:-}" == -b && "\${2:-}" == disablesleep ]]; then
+		printf '%s\n' "\$3" > "\$d/flag"
+		printf 'pmset -b disablesleep %s\n' "\$3" >> "\$d/calls"
+	else
+		printf 'pmset %s\n' "\$*" >> "\$d/calls"
+	fi
+}
+watch_loop
+EOF
+
+# Stub helpers. Each records its pid, then behaves as named. The normal one
+# relays $wl_dir/emit and exits once its --parent is gone.
+wl_helper() { # name body
+	printf '#!/bin/bash\nparent="$2"\necho $$ > %q/helper.pid\n%s\n' "$wl_dir" "$2" > "$wl_dir/$1"
+	chmod +x "$wl_dir/$1"
+}
+wl_relay="while kill -0 \"\$parent\" 2>/dev/null; do
+	if [[ -e $wl_dir/emit ]]; then cat $wl_dir/emit; rm -f $wl_dir/emit; fi
+	sleep 0.1
+done"
+wl_helper helper "echo \"ready \$\$\"
+$wl_relay"
+wl_helper helper-silent "$wl_relay"
+wl_helper helper-exit 'echo "ready $$"'
+wl_helper helper-close "echo \"ready \$\$\"
+exec 1>&-
+$wl_relay"
+
+wl_start() { # helper [stall] [env -i]
+	rm -f "$wl_dir/emit" "$wl_dir/helper.pid" "$wl_dir/until"
+	printf 'off\n' > "$wl_dir/mode"
+	printf '0\n' > "$wl_dir/flag"
+	printf '0\n' > "$wl_dir/displays"
+	printf 'open\n' > "$wl_dir/lid"
+	: > "$wl_dir/calls"; : > "$wl_dir/log"
+	if [[ "${3:-}" == env-i ]]; then
+		env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin bash "$wl_dir/runner.sh" "$wl_dir" "$1" "${2:-}" 2>>"$wl_dir/stderr" &
+	else
+		bash "$wl_dir/runner.sh" "$wl_dir" "$1" "${2:-}" 2>>"$wl_dir/stderr" &
+	fi
+	wl_pid=$!
+}
+wl_stop() {
+	pkill -P "$wl_pid" 2>/dev/null
+	kill "$wl_pid" 2>/dev/null
+	wait "$wl_pid" 2>/dev/null
+}
+wl_pid=''
+trap 'wl_stop' EXIT
+
+# Polls every 0.1s for up to $1 seconds; true as soon as the test passes.
+wl_wait() { # seconds test...
+	local n=$(( $1 * 10 ))
+	shift
+	while (( n-- > 0 )); do "$@" && return 0; sleep 0.1; done
+	return 1
+}
+wl_flag_on() { /usr/bin/grep -q '^pmset -b disablesleep 1$' "$wl_dir/calls"; }
+wl_gone_lines() { /usr/bin/grep -c 'events helper gone (' "$wl_dir/log" || true; }
+wl_has_gone() { [[ "$(wl_gone_lines)" -ge 1 ]]; }
+wl_helper_up() { [[ -s "$wl_dir/helper.pid" ]] && kill -0 "$(cat "$wl_dir/helper.pid")" 2>/dev/null; }
+wl_yes() { "$@" && echo yes || echo no; }
+
+wl_event_case() { # name [env-i]
+	wl_start "$wl_dir/helper" '' "${2:-}"
+	wl_wait 3 wl_helper_up
+	sleep 0.3   # past the ready line, into the wait
+	printf 'on\n' > "$wl_dir/mode"
+	echo config > "$wl_dir/emit"
+	expect_eq "$1" 'yes 0' "$(wl_yes wl_wait 1 wl_flag_on) $(wl_gone_lines)"
+	wl_stop
+}
+wl_event_case 'a config line drives a pass: flag set within 1s, no fallback'
+
+wl_start "$wl_dir/helper"
+printf 'on\n' > "$wl_dir/mode"
+printf '1\n' > "$wl_dir/flag"
+printf '%s\n' "$(( $(date +%s) + 2 ))" > "$wl_dir/until"
+wl_timer_cut() { /usr/bin/grep -q 'cut reason=timer' "$wl_dir/log"; }
+expect_eq 'a quiet timeout drives the timer cut, and is not taken for EOF' 'yes off 0' \
+	"$(wl_yes wl_wait 4 wl_timer_cut) $(tr -d '[:space:]' < "$wl_dir/mode") $(wl_gone_lines)"
+wl_stop
+
+wl_fallback_case() { # name helper [stall] [check-helper-gone]
+	local gone=''
+	wl_start "$2" "${3:-}"
+	wl_wait 6 wl_has_gone
+	sleep 0.2
+	printf 'on\n' > "$wl_dir/mode"
+	[[ -z "${4:-}" ]] || gone=" $(wl_yes eval '! wl_helper_up')"
+	expect_eq "fallback, $1: one log line, then polling sets the flag within 3s" \
+		"1 yes${4:+ yes}" "$(wl_gone_lines) $(wl_yes wl_wait 3 wl_flag_on)$gone"
+	wl_stop
+}
+wl_fallback_case 'helper missing' "$wl_dir/nonexistent"
+wl_fallback_case 'never ready' "$wl_dir/helper-silent"
+wl_fallback_case 'exits after ready' "$wl_dir/helper-exit"
+wl_fallback_case 'closes stdout, keeps running' "$wl_dir/helper-close" '' check
+wl_fallback_case 'stalled' "$wl_dir/helper" 2 check
+
+wl_event_case 'with no HOME (env -i), a config line still sets the flag' env-i
+
+trap - EXIT
+rm -rf "$wl_dir"
+
 printf '\n\033[1minstaller\033[0m\n\n'
 
 # The error log is rotated so a reinstall does not present stale failures as
