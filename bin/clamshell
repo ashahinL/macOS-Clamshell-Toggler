@@ -319,10 +319,14 @@ write_timer() {
 	dir="$(dirname "$f")"
 	mkdir -p "$dir" 2>/dev/null || die "cannot create $dir"
 
-	# The deadline first, as in write_mode: if it fails, the old timer and
-	# deadline stay as they were.
-	[[ "$v" != off && "$(read_mode)" == on ]] && arm_until "$v"
-	printf '%s\n' "$v" > "$f" 2>/dev/null || die "cannot write $f"
+	# Length staged, then the deadline, then the length moved in: a failure at
+	# any step leaves the old timer and deadline as a pair.
+	printf '%s\n' "$v" > "$f.tmp" 2>/dev/null || die "cannot write $f.tmp"
+	if [[ "$v" != off && "$(read_mode)" == on ]] && ! ( arm_until "$v" ); then
+		rm -f "$f.tmp"
+		exit 1
+	fi
+	mv -f "$f.tmp" "$f" 2>/dev/null || { rm -f "$f.tmp"; die "cannot write $f"; }
 	if [[ "$v" == off ]]; then
 		f="$(config_path until)" && rm -f "$f"
 	fi

@@ -511,10 +511,25 @@ rmdir "$cut_dir/until.tmp"
 timer_reset on 60 "$((now + 1000))"
 mkdir "$cut_dir/until.tmp"
 tcli write_timer 1 >/dev/null 2>&1; rc=$?
-expect_eq 'on, timer 60, timer 1 whose deadline fails → old timer and deadline kept' \
-	"nonzero 60 $((now + 1000))" \
-	"$( ((rc)) && printf nonzero || printf zero ) $(tcli read_timer) $(tr -d '[:space:]' < "$cut_dir/until")"
+expect_eq 'on, timer 60, timer 1 whose deadline fails → old timer and deadline kept, no temp file' \
+	"nonzero 60 $((now + 1000)) gone" \
+	"$( ((rc)) && printf nonzero || printf zero ) $(tcli read_timer) $(tr -d '[:space:]' < "$cut_dir/until") $([[ -e "$cut_dir/timer.tmp" ]] && echo there || echo gone)"
 rmdir "$cut_dir/until.tmp"
+
+timer_reset on 1 "$((now + 60))"
+mkdir "$cut_dir/timer.tmp"
+tcli write_timer 1440 >/dev/null 2>&1; rc=$?
+expect_eq 'on, timer 1, timer 1440 whose length fails → old timer and deadline kept' \
+	"nonzero 1 $((now + 60))" \
+	"$( ((rc)) && printf nonzero || printf zero ) $(tcli read_timer) $(tr -d '[:space:]' < "$cut_dir/until")"
+rmdir "$cut_dir/timer.tmp"
+
+timer_reset on 1 "$((now + 60))"
+chmod 444 "$cut_dir/timer"
+tcli write_timer 1440 >/dev/null 2>&1; rc=$?
+expect_eq 'on, read-only timer file, timer 1440 → both saved together' 'zero 1440 ok' \
+	"$( ((rc)) && printf nonzero || printf zero ) $(tcli read_timer) $(until_near 86400)"
+chmod 644 "$cut_dir/timer"
 
 timer_reset on 60 "$((now + 1000))"
 tcli write_mode off >/dev/null
