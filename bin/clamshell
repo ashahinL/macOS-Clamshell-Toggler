@@ -395,10 +395,11 @@ want_value() { want_for_displays "$(external_displays)"; }
 
 # ----------------------------------------------------------------- commands ---
 
-# Cheap change-detector for the mode file: mtime plus size, ~1ms.
+# Cheap change-detector for the mode file: mtime to the nanosecond plus size,
+# ~1ms. Whole seconds missed a same-size rewrite within the second.
 mode_stamp() {
 	[[ -n "$MODE_FILE" ]] || return 0
-	stat -f '%m %z' "$MODE_FILE" 2>/dev/null
+	stat -f '%Fm %z' "$MODE_FILE" 2>/dev/null
 }
 
 # Blanking state, carried across polls by cmd_watch.

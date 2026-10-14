@@ -383,6 +383,48 @@ held="$(
 )"
 expect_eq 'a cut holds until the mode file changes' 'true false []' "$held"
 
+# A real cut whose write of `off` fails, then the user writes `on` again within
+# the same second: same size, same whole-second mtime. The hold must still let
+# go. Retried if the second ticks over, so the old-format check never passes
+# vacuously.
+same_second="$(
+	set -- version
+	export CLAMSHELL_MODE_FILE="$cut_dir/mode" CLAMSHELL_LOG_FILE="$cut_dir/log"
+	# shellcheck disable=SC1090
+	source "$CLAMSHELL" >/dev/null
+	lid_is_closed() { return 0; }
+	boot_time() { printf '%s' "$(( $(date +%s) - 3600 ))"; }
+	pmset() {
+		if [[ "${1:-}" == -g && "${2:-}" == batt ]]; then
+			printf "Now drawing from 'Battery Power'\n"
+			printf ' -InternalBattery-0 (id=1)\t80%%; discharging; 0:40 remaining present: true\n'
+		elif [[ "${1:-}" == -g && -z "${2:-}" ]]; then
+			printf ' SleepDisabled\t\t0\n lowpowermode\t\t0\n'
+		fi
+	}
+	sudo() { return 1; }
+	out='second ticked over on every try'
+	for _ in 1 2 3; do
+		rm -f "$cut_dir/last-cut" "$cut_dir/lpm" "$cut_dir/lpm-hold" "$cut_dir/resume" "$cut_dir/floor"
+		printf '%s\n' "$(( $(date +%s) - 10 ))" > "$cut_dir/until"
+		printf '60\n' > "$cut_dir/timer"
+		CUT_STAMP=''
+		printf 'on\n' > "$cut_dir/mode"
+		old_before=$(stat -f '%m %z' "$cut_dir/mode")
+		read_power_settings; maybe_cut 0
+		if held_by_cut; then a=held; else a=free; fi
+		printf 'on\n' > "$cut_dir/mode"
+		old_after=$(stat -f '%m %z' "$cut_dir/mode")
+		[[ "$old_before" == "$old_after" ]] || continue
+		if held_by_cut; then b=held; else b=free; fi
+		out="mode=$(tr -d '[:space:]' < "$cut_dir/mode") $a $b old-stamps-equal"
+		break
+	done
+	printf '%s' "$out"
+)"
+expect_eq 'cut, then `on` rewritten in the same second → hold lets go' \
+	'mode=on held free old-stamps-equal' "$same_second"
+
 # Every sudo fails, so `off`, the timer and the deadline all stay as they were.
 # Later polls must not cut again: no new log line, last-cut or sleepnow.
 CUT_SUDO_FAIL=1 cut_run on 'Battery Power' 80 '' 0 0 3 "$(( $(date +%s) - 10 ))" 60 1
