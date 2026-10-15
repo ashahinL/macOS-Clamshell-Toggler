@@ -206,6 +206,10 @@ when a cutoff or the screen re-arm is due, and at least once a minute. If the
 helper is missing, exits, or goes quiet for 150 seconds, the daemon logs it and
 polls instead: the mode every second, the rest every 5 seconds.
 
+On the author's M4 MacBook Air this took Clamshell's 12 hr Power in Activity
+Monitor from 14.68 to 1.68. The watcher and its helper together use about 0.1
+seconds of CPU per minute, down from 1.69.
+
 ### The built-in screen turns off
 
 Blocking sleep leaves one problem: macOS never tells the built-in screen to go
