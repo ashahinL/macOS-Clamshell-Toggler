@@ -20,8 +20,8 @@ jobs:
       - name: Run test suite
         run: make test
 
-      - name: Build the menu bar app
-        run: make app
+      - name: Build the app and the event helper
+        run: make
 
       - name: Verify the app bundle
         run: |
@@ -38,6 +38,7 @@ jobs:
           test -f /tmp/clamshell-pkgcheck/clamshell-component.pkg/Scripts/postinstall
           test -f /tmp/clamshell-pkgcheck/clamshell-component.pkg/Scripts/scripts/install.sh
           test -f /tmp/clamshell-pkgcheck/clamshell-component.pkg/Scripts/bin/clamshell
+          test -f /tmp/clamshell-pkgcheck/clamshell-component.pkg/Scripts/bin/clamshell-events
           if [[ -n "$(find /tmp/clamshell-pkgcheck -name '._*')" ]]; then
             find /tmp/clamshell-pkgcheck -name '._*'
             exit 1

@@ -10,6 +10,7 @@ set -euo pipefail
 readonly LABEL='local.clamshell'
 readonly PLIST="/Library/LaunchDaemons/${LABEL}.plist"
 readonly BIN='/usr/local/bin/clamshell'
+readonly EVENTS_BIN='/usr/local/bin/clamshell-events'
 readonly UNINSTALL_BIN='/usr/local/bin/clamshell-uninstall'
 readonly ERR_LOG='/var/log/clamshell.err'          # plist StandardErrorPath
 readonly ERR_LOG_PREV="${ERR_LOG}.prev"
@@ -21,6 +22,12 @@ say()  { printf '\033[1m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# The plist form keeps a home path with spaces whole.
+home_of() {
+	dscl -plist . -read "/Users/$1" NFSHomeDirectory 2>/dev/null |
+		plutil -extract 'dsAttrTypeStandard:NFSHomeDirectory.0' raw -o - - 2>/dev/null
+}
+
 [[ "$(uname -s)" == 'Darwin' ]] || die 'macOS only.'
 [[ $EUID -eq 0 ]] || die 'run with sudo:  sudo ./scripts/install.sh'
 
@@ -31,7 +38,7 @@ TARGET_USER="${SUDO_USER:-}"
 [[ -n "$TARGET_USER" && "$TARGET_USER" != 'root' ]] ||
 	die 'cannot determine the login user; run via sudo as your normal account.'
 
-TARGET_HOME="$(dscl . -read "/Users/$TARGET_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+TARGET_HOME="$(home_of "$TARGET_USER" || true)"
 [[ -d "$TARGET_HOME" ]] || die "cannot resolve home directory for $TARGET_USER"
 
 MODE_DIR="$TARGET_HOME/.config/clamshell"
@@ -42,6 +49,15 @@ say "installing for user: $TARGET_USER"
 say "installing $BIN"
 install -d -o root -g wheel -m 755 /usr/local/bin
 install -o root -g wheel -m 755 "$REPO/bin/clamshell" "$BIN"
+
+events_src="$REPO/bin/clamshell-events"
+[[ -f "$events_src" ]] || events_src="$REPO/build/clamshell-events"
+if [[ -f "$events_src" ]]; then
+	say "installing $EVENTS_BIN"
+	install -o root -g wheel -m 755 "$events_src" "$EVENTS_BIN"
+else
+	warn 'clamshell-events not built (run make first); the watcher will poll instead'
+fi
 
 say "installing $UNINSTALL_BIN"
 install -o root -g wheel -m 755 "$REPO/scripts/uninstall.sh" "$UNINSTALL_BIN"

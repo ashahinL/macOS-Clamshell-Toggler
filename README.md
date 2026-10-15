@@ -3,7 +3,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Platform: macOS 13+](https://img.shields.io/badge/Platform-macOS%2013%2B-brightgreen.svg)
 ![Architecture: Apple Silicon](https://img.shields.io/badge/Arch-Apple%20Silicon-orange.svg)
-![Version: 1.4.0](https://img.shields.io/badge/Version-1.4.0-purple.svg)
+![Version: 1.5.0](https://img.shields.io/badge/Version-1.5.0-purple.svg)
 
 Use your Mac with the lid closed **on battery power**, with no charger.
 
@@ -30,8 +30,9 @@ in a bag still sleeps like it always did.
 - **One panel.** See the state, switch modes, and set the cutoffs from the menu bar.
 - **No password after install.** Switching modes writes a file in your home folder.
 - **Survives reboots.** The watcher runs as a `launchd` system daemon.
-- **Small and reversible.** One bash script does the work, and the app is only a
-  view onto it. `sudo clamshell-uninstall` restores stock behaviour.
+- **Small and reversible.** One bash script does the work, a small helper tells
+  it when something changed, and the app is only a view onto it.
+  `sudo clamshell-uninstall` restores stock behaviour.
 
 ## Requirements
 
@@ -196,12 +197,14 @@ so it reads `1` on AC too, and `on` keeps an AC Mac awake with the lid shut. On
 AC, `auto` changes nothing in practice. It sets the flag only while a display is
 attached, and macOS already keeps an AC Mac awake in that case.
 
-The daemon polls its two inputs at different rates:
-
-- **The mode, every second.** You may close the lid right after switching
-  modes. A stale flag would make the switch look broken.
-- **The displays, every five seconds.** The probe costs about 23 ms, and
-  nothing races it.
+The daemon waits on a small helper, `clamshell-events`, instead of polling. The
+helper watches the mode folder, the lid, displays, the power source and battery,
+Low Power Mode, the sleep flag and wake from sleep. Every 5 seconds it also
+re-reads the displays, the lid and the flag itself. It prints a line only when
+something changed and decides nothing. The daemon runs its check on each line,
+when a cutoff or the screen re-arm is due, and at least once a minute. If the
+helper is missing, exits, or goes quiet for 150 seconds, the daemon logs it and
+polls instead: the mode every second, the rest every 5 seconds.
 
 ### The built-in screen turns off
 
@@ -210,18 +213,18 @@ dark. Measured on an M4 Air with the lid shut and no monitor attached, the
 built-in screen stayed lit for all 100 samples over 50 seconds. That is heat
 and battery spent lighting the inside of a closed laptop.
 
-So once the lid has been shut for a couple of polls with no external display,
-the daemon runs `pmset displaysleepnow`. That sleeps the display only. Wi-Fi,
-audio, downloads, and running jobs carry on, and opening the lid wakes the
-screen as usual.
+So once the lid has read shut on two readings 5 seconds apart with no external
+display, the daemon runs `pmset displaysleepnow`. That sleeps the display only.
+Wi-Fi, audio, downloads, and running jobs carry on, and opening the lid wakes
+the screen as usual.
 
 The daemon turns the screen off only when all of these are true:
 
 - Clamshell is what keeps the Mac awake.
 - **Zero** external displays are attached. `displaysleepnow` would also turn
   off a monitor, which is the screen you are looking at.
-- The lid has read closed on consecutive polls, so one bad sample cannot blank
-  a screen you are using.
+- The lid has read closed on two readings 5 seconds apart, so one bad sample
+  cannot blank a screen you are using.
 
 In practice, that means `on` mode with no monitor. With a monitor attached,
 macOS turns the built-in screen off itself. In `auto` mode with no monitor, the
@@ -241,7 +244,8 @@ ioreg -r -k SinkDeviceOUI -d1 -w0 | awk '/^\+-o /{n++} END{print n+0}'
 
 That key holds the manufacturer ID from the monitor's EDID, so it exists only
 when a display is physically connected over DisplayPort or HDMI. The built-in
-screen never publishes it.
+screen never publishes it. The event helper reads the same `SinkDeviceOUI`
+count in-process, without running `ioreg`.
 
 ## Troubleshooting
 
@@ -301,8 +305,9 @@ sudo clamshell-uninstall
 ```
 
 This works for a downloaded package and for a build from source. It unloads
-the daemon, removes the CLI, the watcher and the app, and resets
-`disablesleep` to `0`.
+the daemon, removes the CLI, the watcher, the event helper, the app and its
+login agent, and resets `disablesleep` to `0`. If Clamshell still shows under
+System Settings → General → Login Items, remove it there.
 
 From a source checkout you can also run:
 
@@ -324,8 +329,9 @@ The suite stubs `ioreg`, `pmset`, and `sudo`, so it covers every state without
 unplugging a monitor. It checks:
 
 - **Mode to flag.** Every combination of mode and attached displays.
-- **Fail-safe.** A missing mode file, a garbage one, and a failing `ioreg` all
-  resolve to "let it sleep".
+- **Fail-safe.** A missing or garbage mode file falls back to Automatic. A
+  failing `ioreg`, even one that printed part of its output, counts as no
+  monitor, so Automatic lets it sleep.
 - **Daemon environment.** The watcher starts under `env -i`. This guards
   against the unset `$HOME` that once left it crash-looping.
 - **The built-in screen.** It turns off only with the lid shut, no monitor
@@ -345,6 +351,7 @@ bin/clamshell                     CLI and watcher. All the state lives here.
 launchd/local.clamshell.plist.in  LaunchDaemon template. The installer fills in __MODE_FILE__.
 gui/Clamshell/*.swift             menu bar app (AppKit and SwiftUI). A view only.
 gui/Clamshell/Info.plist          app bundle metadata
+gui/Events/main.swift             event helper (clamshell-events). Reports changes; decides nothing.
 gui/Preview/main.swift            draws the panel to PNG (make preview)
 scripts/install.sh                installer
 scripts/uninstall.sh              uninstaller, installed as clamshell-uninstall
@@ -358,7 +365,8 @@ Makefile                          build, test, preview, install, pkg
 ```
 
 The dependency runs one way. The app runs the CLI, the CLI writes the mode
-file, and the root daemon reads it. The app keeps no state of its own, so
+file, and the root daemon reads it. The daemon and the app each run the event
+helper to learn when something changed. The app keeps no state of its own, so
 anything it does, you can also do from a terminal.
 
 ## License

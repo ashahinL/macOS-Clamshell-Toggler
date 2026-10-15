@@ -25,6 +25,8 @@ want_with() {
 
 	if [[ "$displays" == 'broken' ]]; then
 		printf '#!/bin/sh\necho "ioreg: failure" >&2\nexit 1\n' > "$tmp/ioreg"
+	elif [[ "$displays" == 'partial' ]]; then
+		printf '#!/bin/sh\necho "+-o DisplayPort  <class IOPortTransportStateDisplayPort>"\nexit 1\n' > "$tmp/ioreg"
 	else
 		{
 			echo '#!/bin/sh'
@@ -76,6 +78,7 @@ printf '\n\033[1mfail-safe\033[0m  (unknown state must never keep the Mac awake)
 check 'missing mode file        → auto'  1 missing 1
 check 'garbage mode file        → auto'  0 garbage 0
 check 'ioreg failure + auto     → sleep' broken auto 0
+check 'ioreg fails after output → sleep' partial auto 0
 
 printf '\n\033[1mdaemon environment\033[0m  (launchd supplies PATH and nothing else)\n\n'
 
@@ -295,6 +298,7 @@ cut_run() { # mode source pct floor lid displays polls [until [timer [lid-streak
 		sudo() {
 			printf 'sudo %s\n' "$*" >> "$cut_dir/calls"
 			[[ -z "${CUT_SUDO_FAIL:-}" ]] || return 1
+			[[ -z "${CUT_UNTIL_FAIL:-}" || "${!#}" != */until ]] || return 1
 			shift 3; "$@"
 		}
 		for ((i = 0; i < cut_polls; i++)); do read_power_settings; maybe_cut "$cut_disp"; done
@@ -383,6 +387,44 @@ held="$(
 )"
 expect_eq 'a cut holds until the mode file changes' 'true false []' "$held"
 
+same_second="$(
+	set -- version
+	export CLAMSHELL_MODE_FILE="$cut_dir/mode" CLAMSHELL_LOG_FILE="$cut_dir/log"
+	# shellcheck disable=SC1090
+	source "$CLAMSHELL" >/dev/null
+	lid_is_closed() { return 0; }
+	boot_time() { printf '%s' "$(( $(date +%s) - 3600 ))"; }
+	pmset() {
+		if [[ "${1:-}" == -g && "${2:-}" == batt ]]; then
+			printf "Now drawing from 'Battery Power'\n"
+			printf ' -InternalBattery-0 (id=1)\t80%%; discharging; 0:40 remaining present: true\n'
+		elif [[ "${1:-}" == -g && -z "${2:-}" ]]; then
+			printf ' SleepDisabled\t\t0\n lowpowermode\t\t0\n'
+		fi
+	}
+	sudo() { return 1; }
+	out='second ticked over on every try'
+	for _ in 1 2 3; do
+		rm -f "$cut_dir/last-cut" "$cut_dir/lpm" "$cut_dir/lpm-hold" "$cut_dir/resume" "$cut_dir/floor"
+		printf '%s\n' "$(( $(date +%s) - 10 ))" > "$cut_dir/until"
+		printf '60\n' > "$cut_dir/timer"
+		CUT_STAMP=''
+		printf 'on\n' > "$cut_dir/mode"
+		old_before=$(stat -f '%m %z' "$cut_dir/mode")
+		read_power_settings; maybe_cut 0
+		if held_by_cut; then a=held; else a=free; fi
+		printf 'on\n' > "$cut_dir/mode"
+		old_after=$(stat -f '%m %z' "$cut_dir/mode")
+		[[ "$old_before" == "$old_after" ]] || continue
+		if held_by_cut; then b=held; else b=free; fi
+		out="mode=$(tr -d '[:space:]' < "$cut_dir/mode") $a $b old-stamps-equal"
+		break
+	done
+	printf '%s' "$out"
+)"
+expect_eq 'cut, then `on` rewritten in the same second → hold lets go' \
+	'mode=on held free old-stamps-equal' "$same_second"
+
 # Every sudo fails, so `off`, the timer and the deadline all stay as they were.
 # Later polls must not cut again: no new log line, last-cut or sleepnow.
 CUT_SUDO_FAIL=1 cut_run on 'Battery Power' 80 '' 0 0 3 "$(( $(date +%s) - 10 ))" 60 1
@@ -451,6 +493,43 @@ timer_reset off 60
 tcli write_mode on >/dev/null
 expect_eq 'timer 60, on → until is an hour ahead' ok "$(until_near 3600)"
 expect_eq 'no half-written until.tmp is left behind' gone "$([[ -e "$cut_dir/until.tmp" ]] && echo there || echo gone)"
+
+timer_reset off 60
+mkdir "$cut_dir/until.tmp"
+tcli write_mode on >/dev/null 2>&1; rc=$?
+expect_eq 'timer 60, on, deadline write fails → error, mode stays off' 'nonzero off' \
+	"$( ((rc)) && printf nonzero || printf zero ) $(tr -d '[:space:]' < "$cut_dir/mode")"
+rmdir "$cut_dir/until.tmp"
+
+timer_reset on
+mkdir "$cut_dir/until.tmp"
+tcli write_timer 1 >/dev/null 2>&1; rc=$?
+expect_eq 'on, no timer, timer 1 whose deadline fails → error, timer still off' 'nonzero off gone' \
+	"$( ((rc)) && printf nonzero || printf zero ) $(tcli read_timer) $(has_until)"
+rmdir "$cut_dir/until.tmp"
+
+timer_reset on 60 "$((now + 1000))"
+mkdir "$cut_dir/until.tmp"
+tcli write_timer 1 >/dev/null 2>&1; rc=$?
+expect_eq 'on, timer 60, timer 1 whose deadline fails → old timer and deadline kept, no temp file' \
+	"nonzero 60 $((now + 1000)) gone" \
+	"$( ((rc)) && printf nonzero || printf zero ) $(tcli read_timer) $(tr -d '[:space:]' < "$cut_dir/until") $([[ -e "$cut_dir/timer.tmp" ]] && echo there || echo gone)"
+rmdir "$cut_dir/until.tmp"
+
+timer_reset on 1 "$((now + 60))"
+mkdir "$cut_dir/timer.tmp"
+tcli write_timer 1440 >/dev/null 2>&1; rc=$?
+expect_eq 'on, timer 1, timer 1440 whose length fails → old timer and deadline kept' \
+	"nonzero 1 $((now + 60))" \
+	"$( ((rc)) && printf nonzero || printf zero ) $(tcli read_timer) $(tr -d '[:space:]' < "$cut_dir/until")"
+rmdir "$cut_dir/timer.tmp"
+
+timer_reset on 1 "$((now + 60))"
+chmod 444 "$cut_dir/timer"
+tcli write_timer 1440 >/dev/null 2>&1; rc=$?
+expect_eq 'on, read-only timer file, timer 1440 → both saved together' 'zero 1440 ok' \
+	"$( ((rc)) && printf nonzero || printf zero ) $(tcli read_timer) $(until_near 86400)"
+chmod 644 "$cut_dir/timer"
 
 timer_reset on 60 "$((now + 1000))"
 tcli write_mode off >/dev/null
@@ -645,6 +724,10 @@ expect_eq 'resume with timer 60 → until is about an hour ahead' ok "$(until_ne
 expect_eq 'resume with a timer still turns the mode on and drops the marker' 'on gone' \
 	"$(tr -d '[:space:]' < "$cut_dir/mode") $(resume_there)"
 
+CUT_UNTIL_FAIL=1 CUT_AFTER=2 CUT_SRC2='AC Power' cut_run on 'Battery Power' 14 '' 0 0 4 '' 60
+expect_eq 'resume whose deadline write fails → stays off, marker kept, no log' 'off there 0' \
+	"$(tr -d '[:space:]' < "$cut_dir/mode") $(resume_there) $(resume_logs)"
+
 printf 'on\n' > "$cut_dir/resume"
 tcli write_mode off >/dev/null
 expect_eq 'write_mode off deletes a pending resume' gone "$(resume_there)"
@@ -721,6 +804,205 @@ expect_eq 'json: a quote, a backslash and a tab in the mode file path → valid,
 
 rm -rf "$full_dir" "$bare_dir"
 
+printf '\n\033[1mwatch loop\033[0m  (wait on the event helper, poll if it fails)\n\n'
+
+wl_dir="$(mktemp -d)"
+[[ -d "$wl_dir" ]] || { printf 'watch loop: no temp dir\n' >&2; exit 1; }
+
+nw() {
+	local sets=("$@")
+	(
+		set -- version
+		# shellcheck disable=SC1090
+		source "$CLAMSHELL" >/dev/null
+		fake_now=1000000
+		date() { printf '%s' "$fake_now"; }
+		# shellcheck disable=SC2034
+		LAST_PASS=$(( fake_now - 10 )) LAST_LINE=$fake_now
+		for a in ${sets[@]+"${sets[@]}"}; do eval "$a"; done
+		next_wait
+	)
+}
+expect_eq 'next_wait: nothing pending, last pass 10s ago → 50' 50 "$(nw)"
+expect_eq 'next_wait: floor streak 1, sampled 2s ago → 3' 3 \
+	"$(nw 'FLOOR_STREAK=1' 'LAST_SAMPLE=$(( fake_now - 2 ))')"
+expect_eq 'next_wait: last pass did not count, sampled 1s ago → 4' 4 \
+	"$(nw 'COUNTS_TOWARD_STREAK=0' 'LAST_SAMPLE=$(( fake_now - 1 ))')"
+expect_eq 'next_wait: a full streak is not waited on' 50 \
+	"$(nw 'FLOOR_STREAK=2' 'LAST_SAMPLE=$(( fake_now - 2 ))')"
+expect_eq 'next_wait: blanking armed 20s ago → 40' 40 "$(nw 'BLANK_LAST=$(( fake_now - 20 ))')"
+expect_eq 'next_wait: deadline in 7s → 7' 7 "$(nw 'AUTO_OFF_AT=$(( fake_now + 7 ))')"
+expect_eq 'next_wait: deadline passed → 1' 1 "$(nw 'AUTO_OFF_AT=$(( fake_now - 5 ))')"
+expect_eq 'next_wait: last helper line 149s ago → 1' 1 "$(nw 'LAST_LINE=$(( fake_now - 149 ))')"
+
+printf 'on\n' > "$wl_dir/mode"
+spacing="$(
+	set -- version
+	export CLAMSHELL_MODE_FILE="$wl_dir/mode" CLAMSHELL_LOG_FILE="$wl_dir/spacing.log"
+	# shellcheck disable=SC1090
+	source "$CLAMSHELL" >/dev/null
+	t=1000000 lid=0
+	date() { if [[ "${1:-}" == +%s ]]; then printf '%s' "$t"; else command date "$@"; fi; }
+	external_displays() { printf '0'; }
+	read_power_settings() { PM_SLEEP_DISABLED=1 PM_LOW_POWER=0; }
+	read_battery() { PM_SOURCE='AC Power' PM_PERCENT=80; }
+	lid_is_closed() { return "$lid"; }
+	read_screen() { printf 'off'; }
+	read_mode() { printf 'on'; }
+	pmset() { printf 'pmset %s\n' "$*" >> "$wl_dir/spacing.calls"; }
+	: > "$wl_dir/spacing.calls"
+	sleeps() { /usr/bin/grep -c displaysleepnow "$wl_dir/spacing.calls" || true; }
+	run_pass; run_pass
+	printf '%s/%s ' "$BLANK_STREAK" "$(sleeps)"
+	t=$(( t + 5 )); run_pass
+	printf '%s/%s ' "$BLANK_STREAK" "$(sleeps)"
+	lid=1; run_pass
+	printf '%s/%s' "$BLANK_STREAK" "$(sleeps)"
+)"
+expect_eq 'two passes in the same second count once; one 5s later counts; lid open resets at once' \
+	'1/0 2/1 0/1' "$spacing"
+
+# The real watch_loop, in its own bash process: in a subshell $$ would be this
+# test's pid (bash 3.2 has no BASHPID) and the helper would watch the wrong
+# parent.
+cat > "$wl_dir/runner.sh" <<EOF
+d="\$1"
+export CLAMSHELL_MODE_FILE="\$d/mode" CLAMSHELL_LOG_FILE="\$d/log" CLAMSHELL_EVENTS="\$2"
+[[ -z "\${3:-}" ]] || export CLAMSHELL_STALL="\$3"
+set -- version
+source "$CLAMSHELL" >/dev/null
+external_displays() { cat "\$d/displays"; }
+lid_is_closed() { [[ "\$(cat "\$d/lid")" == closed ]]; }
+sudo() { shift 3; "\$@"; }
+pmset() {
+	if [[ "\${1:-}" == -g && "\${2:-}" == batt ]]; then
+		printf "Now drawing from 'AC Power'\n"
+		printf ' -InternalBattery-0 (id=1)\t80%%; charged; 0:00 remaining present: true\n'
+	elif [[ "\${1:-}" == -g ]]; then
+		printf ' SleepDisabled\t\t%s\n lowpowermode\t\t0\n' "\$(cat "\$d/flag")"
+	elif [[ "\${1:-}" == -b && "\${2:-}" == disablesleep ]]; then
+		printf '%s\n' "\$3" > "\$d/flag"
+		printf 'pmset -b disablesleep %s\n' "\$3" >> "\$d/calls"
+	else
+		printf 'pmset %s\n' "\$*" >> "\$d/calls"
+	fi
+}
+watch_loop
+EOF
+
+wl_helper() {
+	printf '#!/bin/bash\nparent="$2"\necho $$ > %q/helper.pid\n%s\n' "$wl_dir" "$2" > "$wl_dir/$1"
+	chmod +x "$wl_dir/$1"
+}
+wl_relay="while kill -0 \"\$parent\" 2>/dev/null; do
+	if [[ -e $wl_dir/emit ]]; then cat $wl_dir/emit; rm -f $wl_dir/emit; fi
+	sleep 0.1
+done"
+wl_helper helper "echo \"ready \$\$\"
+$wl_relay"
+wl_helper helper-silent "$wl_relay"
+wl_helper helper-exit 'echo "ready $$"'
+wl_helper helper-flip "printf 'on\\n' > $wl_dir/mode
+echo \"ready \$\$\"
+$wl_relay"
+wl_helper helper-close "echo \"ready \$\$\"
+exec 1>&-
+$wl_relay"
+
+wl_start() {
+	rm -f "$wl_dir/emit" "$wl_dir/helper.pid" "$wl_dir/until"
+	printf 'off\n' > "$wl_dir/mode"
+	printf '0\n' > "$wl_dir/flag"
+	printf '0\n' > "$wl_dir/displays"
+	printf 'open\n' > "$wl_dir/lid"
+	: > "$wl_dir/calls"; : > "$wl_dir/log"
+	if [[ "${3:-}" == env-i ]]; then
+		env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin bash "$wl_dir/runner.sh" "$wl_dir" "$1" "${2:-}" 2>>"$wl_dir/stderr" &
+	else
+		bash "$wl_dir/runner.sh" "$wl_dir" "$1" "${2:-}" 2>>"$wl_dir/stderr" &
+	fi
+	wl_pid=$!
+}
+wl_stop() {
+	pkill -P "$wl_pid" 2>/dev/null
+	kill "$wl_pid" 2>/dev/null
+	wait "$wl_pid" 2>/dev/null
+}
+wl_pid=''
+trap 'wl_stop' EXIT
+
+wl_wait() {
+	local n=$(( $1 * 10 ))
+	shift
+	while (( n-- > 0 )); do "$@" && return 0; sleep 0.1; done
+	return 1
+}
+wl_flag_on() { /usr/bin/grep -q '^pmset -b disablesleep 1$' "$wl_dir/calls"; }
+wl_gone_lines() { /usr/bin/grep -c 'events helper gone (' "$wl_dir/log" || true; }
+wl_has_gone() { [[ "$(wl_gone_lines)" -ge 1 ]]; }
+wl_helper_up() { [[ -s "$wl_dir/helper.pid" ]] && kill -0 "$(cat "$wl_dir/helper.pid")" 2>/dev/null; }
+wl_yes() { "$@" && echo yes || echo no; }
+
+wl_event_case() {
+	wl_start "$wl_dir/helper" '' "${2:-}"
+	wl_wait 3 wl_helper_up
+	sleep 0.3
+	printf 'on\n' > "$wl_dir/mode"
+	echo config > "$wl_dir/emit"
+	expect_eq "$1" 'yes 0' "$(wl_yes wl_wait 1 wl_flag_on) $(wl_gone_lines)"
+	wl_stop
+}
+wl_event_case 'a config line drives a pass: flag set within 1s, no fallback'
+
+wl_start "$wl_dir/helper"
+printf 'on\n' > "$wl_dir/mode"
+printf '1\n' > "$wl_dir/flag"
+printf '%s\n' "$(( $(date +%s) + 2 ))" > "$wl_dir/until"
+wl_timer_cut() { /usr/bin/grep -q 'cut reason=timer' "$wl_dir/log"; }
+expect_eq 'a quiet timeout drives the timer cut, and is not taken for EOF' 'yes off 0' \
+	"$(wl_yes wl_wait 4 wl_timer_cut) $(tr -d '[:space:]' < "$wl_dir/mode") $(wl_gone_lines)"
+wl_stop
+
+wl_start "$wl_dir/helper-flip"
+expect_eq 'a mode change while the helper starts is applied on ready' 'yes 0' \
+	"$(wl_yes wl_wait 2 wl_flag_on) $(wl_gone_lines)"
+wl_stop
+
+# A lid close under 5s after a counted pass does not count, and no further
+# line comes while the lid stays shut. The screen must still go dark in ~10s.
+wl_start "$wl_dir/helper"
+printf 'on\n' > "$wl_dir/mode"
+wl_wait 3 wl_helper_up
+sleep 0.5
+printf 'closed\n' > "$wl_dir/lid"
+echo lid > "$wl_dir/emit"
+wl_dark() { /usr/bin/grep -q '^pmset displaysleepnow$' "$wl_dir/calls"; }
+expect_eq 'a lid close inside the 5s gap still blanks the screen within 12s' 'yes 0' \
+	"$(wl_yes wl_wait 12 wl_dark) $(wl_gone_lines)"
+wl_stop
+
+wl_fallback_case() {
+	local gone=''
+	wl_start "$2" "${3:-}"
+	wl_wait 12 wl_has_gone
+	sleep 0.2
+	printf 'on\n' > "$wl_dir/mode"
+	[[ -z "${4:-}" ]] || gone=" $(wl_yes eval '! wl_helper_up')"
+	expect_eq "fallback, $1: one log line, then polling sets the flag within 3s" \
+		"1 yes${4:+ yes}" "$(wl_gone_lines) $(wl_yes wl_wait 3 wl_flag_on)$gone"
+	wl_stop
+}
+wl_fallback_case 'helper missing' "$wl_dir/nonexistent"
+wl_fallback_case 'never ready' "$wl_dir/helper-silent"
+wl_fallback_case 'exits after ready' "$wl_dir/helper-exit"
+wl_fallback_case 'closes stdout, keeps running' "$wl_dir/helper-close" '' check
+wl_fallback_case 'stalled' "$wl_dir/helper" 2 check
+
+wl_event_case 'with no HOME (env -i), a config line still sets the flag' env-i
+
+trap - EXIT
+rm -rf "$wl_dir"
+
 printf '\n\033[1minstaller\033[0m\n\n'
 
 # The error log is rotated so a reinstall does not present stale failures as
@@ -763,6 +1045,83 @@ else
 	printf '  \033[31mFAIL\033[0m uninstall leaves clamshell.err.prev behind\n'
 	fail=$((fail + 1))
 fi
+
+n_events="$(line_of 'install -o root -g wheel -m 755 "\$events_src" "\$EVENTS_BIN"')"
+if [[ -n "$n_events" && -n "$n_bootstrap" ]] && (( n_events < n_bootstrap )); then
+	printf '  \033[32mok\033[0m   event helper is installed before the daemon starts\n'
+	pass=$((pass + 1))
+else
+	printf '  \033[31mFAIL\033[0m event helper is not installed before bootstrap\n'
+	printf '       events=%s bootstrap=%s\n' "${n_events:-?}" "${n_bootstrap:-?}"
+	fail=$((fail + 1))
+fi
+
+if /usr/bin/grep -q '/usr/local/bin/clamshell-events' "$REPO/scripts/uninstall.sh"; then
+	printf '  \033[32mok\033[0m   uninstall removes the event helper\n'
+	pass=$((pass + 1))
+else
+	printf '  \033[31mFAIL\033[0m uninstall leaves the event helper behind\n'
+	fail=$((fail + 1))
+fi
+
+# The uninstaller's functions alone, against a temp home with a space in its
+# path, with dscl, id and launchctl stubbed.
+la_dir="$(mktemp -d)"
+la_home="$la_dir/spaced home"
+mkdir -p "$la_home/Library/LaunchAgents" "$la_dir/bin"
+: > "$la_home/Library/LaunchAgents/local.clamshell.menubar.plist"
+cat > "$la_dir/bin/dscl" <<EOF
+#!/bin/sh
+printf '<?xml version="1.0"?><plist version="1.0"><dict><key>dsAttrTypeStandard:NFSHomeDirectory</key><array><string>%s</string></array></dict></plist>' "$la_home"
+EOF
+printf '#!/bin/sh\necho 501\n' > "$la_dir/bin/id"
+printf '#!/bin/sh\necho "launchctl $*" >> %q/calls\n' "$la_dir" > "$la_dir/bin/launchctl"
+chmod +x "$la_dir/bin/"*
+la_got="$(
+	PATH="$la_dir/bin:$PATH" SUDO_USER=someone bash -c '
+		set -euo pipefail
+		say() { :; }
+		eval "$(sed -n "/^home_of()/,/^}/p; /^remove_login_agent()/,/^}/p" "$1")"
+		remove_login_agent
+		printf "%s " "$(home_of someone)"
+		[[ -e "$2/Library/LaunchAgents/local.clamshell.menubar.plist" ]] && printf there || printf gone
+	' _ "$REPO/scripts/uninstall.sh" "$la_home"
+) $(cat "$la_dir/calls" 2>/dev/null)"
+expect_eq 'uninstall removes the login agent from a home with a space in it' \
+	"$la_home gone launchctl bootout gui/501/local.clamshell.menubar" "$la_got"
+expect_eq 'install.sh reads the same home whole' "$la_home" \
+	"$(PATH="$la_dir/bin:$PATH" bash -c 'eval "$(sed -n "/^home_of()/,/^}/p" "$1")"; home_of someone' _ "$REPO/scripts/install.sh")"
+rm -rf "$la_dir"
+
+events_block="$(awk '/^events_src=/{on=1} on{print} on&&/^fi$/{exit}' "$inst")"
+run_events_block() {
+	bash -c 'set -euo pipefail
+		REPO="$1" EVENTS_BIN=/nonexistent/clamshell-events
+		say()     { :; }
+		warn()    { echo "warn: $*"; }
+		install() { echo "src=${*: -2:1}"; }
+		eval "$2"
+		echo done' _ "$1" "$events_block" 2>&1
+}
+ev_tmp="$(mktemp -d)"
+mkdir -p "$ev_tmp/pkg/bin" "$ev_tmp/pkg/build" "$ev_tmp/repo/build" "$ev_tmp/none"
+touch "$ev_tmp/pkg/bin/clamshell-events" "$ev_tmp/pkg/build/clamshell-events" \
+	"$ev_tmp/repo/build/clamshell-events"
+for case in "pkg|src=$ev_tmp/pkg/bin/clamshell-events" \
+            "repo|src=$ev_tmp/repo/build/clamshell-events" \
+            "none|warn: clamshell-events not built"; do
+	dir="${case%%|*}" want="${case#*|}"
+	got="$(run_events_block "$ev_tmp/$dir" || true)"
+	if [[ "$got" == "$want"*$'\n'done ]]; then
+		printf '  \033[32mok\033[0m   event helper source, %s layout\n' "$dir"
+		pass=$((pass + 1))
+	else
+		printf '  \033[31mFAIL\033[0m event helper source, %s layout\n' "$dir"
+		printf '       want %s..., got: %s\n' "$want" "$got"
+		fail=$((fail + 1))
+	fi
+done
+rm -rf "$ev_tmp"
 
 printf '\n\033[1mversions\033[0m\n\n'
 

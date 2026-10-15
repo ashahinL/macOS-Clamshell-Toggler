@@ -8,8 +8,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var status: Status?
     private var lastCutSeen: String?
     private var haveCutBaseline = false
+    private var events: EventStream?
+    private var streamUp = false
+    private var readInFlight = false
+    private var readQueued = false
 
     private let popover = NSPopover()
+    private var outsideClicks: Any?
     private var lastClose = Date.distantPast
     /// Bumped on every change from the panel, so a status read that started
     /// before it is dropped instead of undoing it.
@@ -19,7 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     ))
 
     private static let openInterval: TimeInterval = 2
-    private static let idleInterval: TimeInterval = 15
+    private static let backstopInterval: TimeInterval = 120
+    private static let pollInterval: TimeInterval = 15
+    private var idleInterval: TimeInterval { streamUp ? Self.backstopInterval : Self.pollInterval }
 
     private static let logPath = "/var/log/clamshell.log"
 
@@ -42,7 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         noteCut(status)
         apply()
 
-        startTicker(interval: Self.idleInterval)
+        startTicker(interval: idleInterval)
+        ensureEventStream()
     }
 
     /// Deliberately on `.common` rather than the default run loop mode: while
@@ -51,14 +59,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func startTicker(interval: TimeInterval) {
         timer?.invalidate()
         let ticker = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            self?.ensureEventStream()
             self?.refresh()
         }
         RunLoop.main.add(ticker, forMode: .common)
         timer = ticker
     }
 
+    private func ensureEventStream() {
+        guard events == nil, CLI.isInstalled,
+              let modeFile = status?.modeFile, !modeFile.isEmpty else { return }
+        let stream = EventStream(
+            onLine: { [weak self] line in
+                guard let self else { return }
+                if line.hasPrefix("ready") {
+                    self.streamUp = true
+                    if !self.popover.isShown { self.startTicker(interval: self.idleInterval) }
+                    self.refresh()
+                } else if line != "alive" {
+                    self.refresh()
+                }
+            },
+            onEnd: { [weak self] in
+                guard let self else { return }
+                self.streamUp = false
+                self.events = nil
+                if !self.popover.isShown { self.startTicker(interval: self.idleInterval) }
+            }
+        )
+        events = stream
+        if !stream.start(configDir: (modeFile as NSString).deletingLastPathComponent) {
+            events = nil
+        }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        refresh()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        events?.stop()
     }
 
     /// A transient popover closes itself on the mouse-down of a click on the
@@ -78,8 +119,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentViewController?.view.window?.makeKey()
     }
 
+    /// Another app's menu bar icon takes the click without making this app
+    /// inactive, so a transient popover never sees it and stays open.
     func popoverWillShow(_ notification: Notification) {
         startTicker(interval: Self.openInterval)
+        outsideClicks = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            self?.popover.performClose(nil)
+        }
     }
 
     func popoverWillClose(_ notification: Notification) {
@@ -87,21 +135,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
-        startTicker(interval: Self.idleInterval)
+        if let outsideClicks { NSEvent.removeMonitor(outsideClicks) }
+        outsideClicks = nil
+        startTicker(interval: idleInterval)
     }
 
     // MARK: State
 
     private func refresh() {
+        guard !readInFlight else {
+            readQueued = true
+            return
+        }
+        readInFlight = true
         let started = edits
         probe.async { [weak self] in
             let fresh = CLI.status()
             DispatchQueue.main.async {
-                guard let self, self.edits == started else { return }
-                self.noteResume(from: self.status, to: fresh)
-                self.status = fresh
-                self.noteCut(fresh)
-                self.apply()
+                guard let self else { return }
+                self.readInFlight = false
+                if self.edits == started {
+                    self.noteResume(from: self.status, to: fresh)
+                    self.status = fresh
+                    self.noteCut(fresh)
+                    self.apply()
+                }
+                if self.readQueued {
+                    self.readQueued = false
+                    self.refresh()
+                }
             }
         }
     }
@@ -175,6 +237,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if !CLI.isInstalled {
             state = .warning
             description = "clamshell is not installed"
+        } else if status == nil {
+            state = .warning
+            description = "Unable to read clamshell status"
         } else if let status, !status.watcherRunning {
             state = .warning
             description = "clamshell watcher is not running"

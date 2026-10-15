@@ -66,6 +66,63 @@ enum CLI {
     }
 }
 
+final class EventStream {
+    static let path = ProcessInfo.processInfo.environment["CLAMSHELL_EVENTS"] ?? "/usr/local/bin/clamshell-events"
+
+    private let onLine: (String) -> Void
+    private let onEnd: () -> Void
+    private let process = Process()
+    private let pipe = Pipe()
+
+    init(onLine: @escaping (String) -> Void, onEnd: @escaping () -> Void) {
+        self.onLine = onLine
+        self.onEnd = onEnd
+    }
+
+    func start(configDir: String) -> Bool {
+        guard FileManager.default.isExecutableFile(atPath: Self.path) else { return false }
+        process.executableURL = URL(fileURLWithPath: Self.path)
+        process.arguments = ["--parent", String(getpid()), configDir]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        var buffer = Data()
+        var ended = false
+        let onLine = onLine, onEnd = onEnd
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else {
+                handle.readabilityHandler = nil
+                if !ended {
+                    ended = true
+                    DispatchQueue.main.async(execute: onEnd)
+                }
+                return
+            }
+            buffer.append(chunk)
+            while let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                let line = String(decoding: buffer[buffer.startIndex..<newline], as: UTF8.self)
+                buffer.removeSubrange(buffer.startIndex...newline)
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                DispatchQueue.main.async { onLine(trimmed) }
+            }
+        }
+
+        do {
+            try process.run()
+        } catch {
+            pipe.fileHandleForReading.readabilityHandler = nil
+            return false
+        }
+        return true
+    }
+
+    func stop() {
+        pipe.fileHandleForReading.readabilityHandler = nil
+        if process.isRunning { process.terminate() }
+    }
+}
+
 // MARK: - Open at login
 
 /// `SMAppService`, falling back to a plain LaunchAgent when it throws.

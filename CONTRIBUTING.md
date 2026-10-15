@@ -42,8 +42,10 @@ the whole truth table.
 
 The display probe relies on the Apple Silicon display-coprocessor registry
 layout. Intel Macs expose displays differently and will need a different probe.
-If you want to take that on, `external_displays()` in `bin/clamshell` is the only
-function that needs to change. Please include the output of:
+If you want to take that on, two probes need to change: `external_displays()`
+in `bin/clamshell`, and `readDisplays()` with `armDisplays()` in
+`gui/Events/main.swift`. The Makefile and the `.pkg` also build for arm64 only.
+Please include the output of:
 
 ```sh
 ioreg -r -k SinkDeviceOUI -d1 -w0 | head -40
