@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.5.0] - 2026-10-14
+## [1.5.0] - 2026-10-15
 
 ### Changed
 - **The watcher waits for events instead of polling.** Before, it checked the
@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and wake from sleep. It prints a line only when something changed. The
   watcher runs its check then, when a cutoff or the screen re-arm is due, and
   at least once a minute.
+- **Measured on an M4 MacBook Air:** 12 hr Power in Activity Monitor went from
+  14.68 to 1.68. The watcher and its helper went from 1.69 seconds of CPU per
+  minute to about 0.1.
 - **The helper decides nothing.** Every 5 seconds it re-reads the display
   count, the lid and the sleep flag itself, without starting any programs.
   All the rules stay in `bin/clamshell`.
